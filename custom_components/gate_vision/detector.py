@@ -31,33 +31,6 @@ from .const import (
 )
 
 
-def classify_zone(samples: dict[str, list[float]] | None, current: float) -> tuple[str, float]:
-    """Определить состояние зоны по обученным замерам яркости.
-
-    Обучение: пользователь приводит объект в состояние и «запоминает» замер.
-    Замеров на состояние может быть несколько (день, ночь, разное освещение) —
-    берём ближайший. Возвращает (состояние, уверенность 0..1).
-    """
-    samples = samples or {}
-    open_refs = [float(v) for v in (samples.get("open") or [])]
-    closed_refs = [float(v) for v in (samples.get("closed") or [])]
-    if not open_refs and not closed_refs:
-        return "unknown", 0.0
-    if open_refs and closed_refs:
-        d_open = min(abs(current - v) for v in open_refs)
-        d_closed = min(abs(current - v) for v in closed_refs)
-        mean_open = sum(open_refs) / len(open_refs)
-        mean_closed = sum(closed_refs) / len(closed_refs)
-        spread = abs(mean_open - mean_closed)
-        conf = min(1.0, abs(d_open - d_closed) / spread) if spread > 1e-6 else 0.0
-        return ("open" if d_open < d_closed else "closed"), round(conf, 2)
-    refs = open_refs or closed_refs
-    state = "open" if open_refs else "closed"
-    margin = max(8.0, 0.12 * (sum(refs) / len(refs)))
-    near = min(abs(current - v) for v in refs) <= margin
-    return (state, 0.6) if near else ("unknown", 0.3)
-
-
 def _runs(mask: np.ndarray) -> list[tuple[int, int]]:
     """Непрерывные отрезки True в одномерной маске."""
     out: list[tuple[int, int]] = []
@@ -73,9 +46,8 @@ def _runs(mask: np.ndarray) -> list[tuple[int, int]]:
     return out
 
 
-def _zone_box(
-    zone: dict[str, Any], width: int, height: int
-) -> tuple[int, int, int, int]:
+def _zone_box(zone: dict[str, Any], width: int, height: int) -> tuple[int, int, int, int]:
+    """Границы зоны в пикселях."""
     x0 = max(0, min(width - 1, int(round(zone["x"] * width))))
     y0 = max(0, min(height - 1, int(round(zone["y"] * height))))
     x1 = max(x0 + 1, min(width, int(round((zone["x"] + zone["w"]) * width))))
@@ -94,13 +66,11 @@ def _mean_in_zones(gray: np.ndarray, zones: list[dict[str, Any]]) -> float | Non
         patch = gray[y0:y1, x0:x1]
         if patch.size:
             values.append(float(np.nanmean(patch)))
-    if not values:
-        return None
-    return float(np.mean(values))
+    return float(np.mean(values)) if values else None
 
 
 def _apply_ignore(gray: np.ndarray, zones: list[dict[str, Any]]) -> np.ndarray:
-    """Заменить пиксели зон-исключений на NaN."""
+    """Заменить пиксели зон-исключений на NaN (исключаются из расчётов)."""
     if not zones:
         return gray
     out = gray.astype(np.float32).copy()
@@ -109,6 +79,82 @@ def _apply_ignore(gray: np.ndarray, zones: list[dict[str, Any]]) -> np.ndarray:
         x0, y0, x1, y1 = _zone_box(zone, width, height)
         out[y0:y1, x0:x1] = np.nan
     return out
+
+
+def classify_zone(
+    samples: dict[str, list] | None,
+    current: float,
+    band: bool | None = None,
+) -> tuple[str, float]:
+    """Определить состояние зоны по обученным замерам.
+
+    Обученный замер хранит **два признака**: среднюю яркость и наличие полосы окон
+    (структуру). Яркость одного состояния может совпадать с другим (рассвет, ночь),
+    а структура — нет: у закрытого полотна в зоне видна полоса окон, у открытых
+    ворот зона показывает улицу (ровный участок).
+
+    Возвращает (состояние, уверенность 0..1).
+    """
+    samples = samples or {}
+
+    def refs(state: str) -> list[dict[str, float | bool | None]]:
+        out: list[dict[str, float | bool | None]] = []
+        for item in samples.get(state) or []:
+            if isinstance(item, dict):
+                out.append({"mean": float(item.get("mean", 0)), "band": item.get("band")})
+            else:  # старый формат — только яркость
+                out.append({"mean": float(item), "band": None})
+        return out
+
+    open_refs, closed_refs = refs("open"), refs("closed")
+    if not open_refs and not closed_refs:
+        return "unknown", 0.0
+
+    # --- приоритет: структурный признак, если он различает состояния ---
+    if band is not None:
+        open_bands = [r["band"] for r in open_refs if r["band"] is not None]
+        closed_bands = [r["band"] for r in closed_refs if r["band"] is not None]
+        if open_bands and closed_bands:
+            open_major = sum(bool(b) for b in open_bands) * 2 >= len(open_bands)
+            closed_major = sum(bool(b) for b in closed_bands) * 2 >= len(closed_bands)
+            if open_major != closed_major:
+                state = "closed" if band == closed_major else "open"
+                return state, 0.8
+
+    # --- если структура размечена только у одного состояния, решаем по ней ---
+    if band is not None:
+        open_bands = [r["band"] for r in open_refs if r["band"] is not None]
+        closed_bands = [r["band"] for r in closed_refs if r["band"] is not None]
+        single = open_bands or closed_bands
+        if single and not (open_bands and closed_bands):
+            ref_band = sum(bool(b) for b in single) * 2 >= len(single)
+            known_state = "open" if open_bands else "closed"
+            other = "closed" if known_state == "open" else "open"
+            return (known_state, 0.6) if band == ref_band else (other, 0.5)
+
+    # --- иначе по яркости (ближайший замер) ---
+    if open_refs and closed_refs:
+        d_open = min(abs(current - r["mean"]) for r in open_refs)
+        d_closed = min(abs(current - r["mean"]) for r in closed_refs)
+        mean_open = sum(r["mean"] for r in open_refs) / len(open_refs)
+        mean_closed = sum(r["mean"] for r in closed_refs) / len(closed_refs)
+        spread = abs(mean_open - mean_closed)
+        conf = min(1.0, abs(d_open - d_closed) / spread) if spread > 1e-6 else 0.0
+        return ("open" if d_open < d_closed else "closed"), round(conf, 2)
+
+    # обучено только одно состояние: состояния бинарные, поэтому «не похоже» = другое состояние
+    only = open_refs or closed_refs
+    state = "open" if open_refs else "closed"
+    other = "closed" if state == "open" else "open"
+    margin = max(8.0, 0.12 * (sum(r["mean"] for r in only) / len(only)))
+    near_mean = min(abs(current - r["mean"]) for r in only) <= margin
+    ref_bands = [r["band"] for r in only if r["band"] is not None]
+    if band is not None and ref_bands:
+        ref_band = sum(bool(b) for b in ref_bands) * 2 >= len(ref_bands)
+        near = near_mean and (band == ref_band)
+    else:
+        near = near_mean
+    return (state, 0.6) if near else (other, 0.5)
 
 
 def _merge_runs(runs: list[tuple[int, int]], gap: int) -> list[tuple[int, int]]:
@@ -288,7 +334,13 @@ def analyze(img: Image.Image, settings: Any | None = None) -> dict[str, Any]:
         zx0, zy0, zx1, zy1 = _zone_box(zone, width, height)
         patch = gray[zy0:zy1, zx0:zx1]
         z_mean = float(np.nanmean(patch)) if patch.size else 0.0
-        z_state, z_conf = classify_zone(zone.get("samples"), z_mean)
+        # структурный признак: полоса окон ищется в области НЕМНОГО ШИРЕ зоны —
+        # иначе, если зона нарисована только по окнам, рядом нет полотна и «зажатость» не видна
+        z_pad = int((zy1 - zy0) * 0.6)
+        z_band, _ = _window_band(
+            rows, max(0, zy0 - z_pad), min(floor_y, zy1 + z_pad), thresholds, span=floor_y
+        )
+        z_state, z_conf = classify_zone(zone.get("samples"), z_mean, band=bool(z_band))
         zones_detail.append(
             {
                 "id": zone.get("id"),
@@ -301,6 +353,7 @@ def analyze(img: Image.Image, settings: Any | None = None) -> dict[str, Any]:
                 "px": int(patch.size),
                 "state": z_state,
                 "conf": z_conf,
+                "band": bool(z_band),
                 "samples": {k: len(v or []) for k, v in (zone.get("samples") or {}).items()},
             }
         )
