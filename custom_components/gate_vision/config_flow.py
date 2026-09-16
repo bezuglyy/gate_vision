@@ -19,6 +19,7 @@ from homeassistant.helpers import selector
 from PIL import Image
 
 from .const import (
+    CONF_CAMERA_ENTITY,
     CONF_GO2RTC_BASE,
     CONF_LEARN_MODE,
     CONF_SCAN_INTERVAL,
@@ -75,7 +76,10 @@ def _schema(defaults: dict[str, Any]) -> vol.Schema:
     return vol.Schema(
         {
             vol.Required("name", default=defaults.get("name", NAME)): str,
-            vol.Required(
+            vol.Optional(
+                CONF_CAMERA_ENTITY, default=defaults.get(CONF_CAMERA_ENTITY, "")
+            ): selector.EntitySelector(selector.EntitySelectorConfig(domain="camera")),
+            vol.Optional(
                 CONF_SNAPSHOT_URL, default=defaults.get(CONF_SNAPSHOT_URL, DEFAULT_RTSP)
             ): selector.TextSelector(),
             vol.Optional(
@@ -113,8 +117,9 @@ class GateVisionConfigFlow(ConfigFlow, domain=DOMAIN):
                 f"{user_input.get(CONF_SNAPSHOT_URL)}|{user_input.get(CONF_GO2RTC_BASE)}"
             )
             self._abort_if_unique_id_configured()
-            result = await _check_camera(
+            result = await _check_source(
                 self.hass,
+                user_input.get(CONF_CAMERA_ENTITY, ""),
                 user_input.get(CONF_SNAPSHOT_URL, ""),
                 user_input.get(CONF_GO2RTC_BASE, DEFAULT_GO2RTC_BASE),
             )
@@ -144,8 +149,9 @@ class GateVisionOptionsFlow(OptionsFlow):
         if user_input is not None:
             data = dict(user_input)
             data.pop("name", None)
-            if await _check_camera(
+            if await _check_source(
                 self.hass,
+                data.get(CONF_CAMERA_ENTITY, ""),
                 data.get(CONF_SNAPSHOT_URL, ""),
                 data.get(CONF_GO2RTC_BASE, DEFAULT_GO2RTC_BASE),
             ) is None and not data.get("skip_check"):
