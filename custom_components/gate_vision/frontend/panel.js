@@ -177,6 +177,8 @@ class GateVisionPanel extends HTMLElement {
             <div class="gv-tab active" data-tab="thresholds">Пороги</div>
             <div class="gv-tab" data-tab="reactions">Реагирования</div>
             <div class="gv-tab" data-tab="control">Управление</div>
+            <div class="gv-tab" data-tab="learn">Обучение</div>
+            <div class="gv-tab" data-tab="sched">Расписания</div>
             <div class="gv-tab" data-tab="camera">Камера</div>
             <div class="gv-tab" data-tab="log">Журнал</div>
           </div>
@@ -292,9 +294,8 @@ class GateVisionPanel extends HTMLElement {
   }
 
   async _loadDefaults() {
-    const z1 = { id: "z1", name: "Окна полотна (закрыто)", role: "closed", x: 0.57, y: 0.10, w: 0.25, h: 0.25 };
-    const z2 = { id: "z2", name: "Низ проёма (открыто)", role: "open", x: 0.57, y: 0.40, w: 0.25, h: 0.15 };
-    await this._save({ zones: [z1, z2] });
+    const z1 = { id: "z1", name: "Открыто (низ проёма)", role: "open", x: 0.57, y: 0.40, w: 0.25, h: 0.15 };
+    await this._save({ zones: [z1] });
   }
 
 
@@ -491,6 +492,8 @@ class GateVisionPanel extends HTMLElement {
     if (this._tab === "thresholds") this._renderThresholds(body);
     else if (this._tab === "reactions") this._renderReactions(body);
     else if (this._tab === "control") this._renderControl(body);
+    else if (this._tab === "learn") this._renderLearn(body);
+    else if (this._tab === "sched") this._renderSchedules(body);
     else if (this._tab === "camera") this._renderCamera(body);
     else this._renderLog(body);
     this._renderZoneList();
@@ -582,12 +585,24 @@ class GateVisionPanel extends HTMLElement {
         <input type="text" list="gv-relay" data-f="switch_entity" value="${c.switch_entity || ""}" placeholder="выбрать switch.*">
         ${this._datalist("gv-relay", this._entities(["switch"]))}</div>
       <div class="gv-row"><label>MQTT-топик</label><input type="text" data-f="mqtt_topic" value="${c.mqtt_topic || ""}" placeholder="dingtian/relay8777832/in/r26"></div>
-      <div class="gv-row"><label>Длительность импульса, мс</label><input type="number" data-f="impulse_ms" value="${c.impulse_ms || 800}"></div>
+      <div class="gv-row"><label>Тип реле</label>
+        <select data-f="relay_type" id="gvRelayType">
+          <option value="impulse" ${c.relay_type !== "constant" ? "selected" : ""}>Импульсное (реле само даёт импульс)</option>
+          <option value="constant" ${c.relay_type === "constant" ? "selected" : ""}>Постоянное (держим заданное время)</option>
+        </select></div>
+      <div class="gv-row" id="gvHoldRow" style="${c.relay_type === "constant" ? "" : "display:none"}">
+        <label>Длительность нажатия, мс</label><input type="number" data-f="impulse_ms" value="${c.impulse_ms || 800}"></div>
       <div class="gv-row"><label>Ожидание подтверждения, с</label><input type="number" data-f="confirm_timeout" value="${c.confirm_timeout || 45}"></div>
       <div class="gv-row"><label><input type="checkbox" data-f="check_clear_before_close" ${c.check_clear_before_close ? "checked" : ""}> Перед закрытием проверять камеру</label></div>
       <div class="gv-hint">Пока управление выключено, сущность cover не создаётся — интеграция только читает состояние.
-      Включение потребует подтверждения номера реле ворот.</div>
+      У <b>импульсного</b> реле длительность задаётся в самом реле, поэтому время нажатия не спрашивается.
+      У <b>постоянного</b> реле ворот держим его заданное время и отпускаем.</div>
       <button class="gv-btn">Сохранить</button>`;
+    const typeSel = wrap.querySelector("#gvRelayType");
+    const holdRow = wrap.querySelector("#gvHoldRow");
+    if (typeSel && holdRow) {
+      typeSel.onchange = () => { holdRow.style.display = typeSel.value === "constant" ? "" : "none"; };
+    }
     wrap.querySelector("button").onclick = () => {
       const patch = {};
       wrap.querySelectorAll("[data-f]").forEach((el) => {
@@ -597,6 +612,155 @@ class GateVisionPanel extends HTMLElement {
       this._save({ control: patch });
     };
     host.appendChild(wrap);
+  }
+
+
+  _renderLearn(host) {
+    const zones = this._settings?.zones || [];
+    const measured = {};
+    ((this._state && this._state.zones) || []).forEach((z) => { measured[z.id] = z; });
+    const info = document.createElement("div");
+    info.className = "gv-hint";
+    info.innerHTML = "Приведи объект в нужное состояние и нажми «Запомнить». Можно запомнить несколько раз " +
+      "(день, ночь, разное освещение) — детектор берёт ближайший замер. " +
+      "Галочка «сущность» создаёт отдельную сущность состояния этой области.";
+    host.appendChild(info);
+
+    zones.forEach((z) => {
+      const m = measured[z.id] || {};
+      const kind = z.kind === "on_off" ? "on_off" : "open_closed";
+      const labelOn = kind === "on_off" ? "ВКЛ" : "ОТКРЫТО";
+      const labelOff = kind === "on_off" ? "ВЫКЛ" : "ЗАКРЫТО";
+      const card = document.createElement("div");
+      card.className = "gv-ev";
+      card.innerHTML = `
+        <h4>${z.name} <span class="gv-meta">(${z.id}, ${ROLE_TITLES[z.role] || z.role})</span></h4>
+        <div class="gv-meta">сейчас: <b>${m.mean ?? "—"}</b> · состояние: <b>${m.state || "—"}</b>
+          (уверенность ${m.conf ?? "—"}) · замеров: ${labelOn} ${(z.samples?.open || []).length},
+          ${labelOff} ${(z.samples?.closed || []).length}</div>
+        <div class="gv-ch" style="margin-top:8px">
+          <button class="gv-btn" data-learn="open">Запомнить ${labelOn}</button>
+          <button class="gv-btn" data-learn="closed">Запомнить ${labelOff}</button>
+          <button class="gv-btn secondary" data-reset="1">Сбросить обучение</button>
+        </div>
+        <div class="gv-ch">
+          <label><input type="checkbox" data-ent="1" ${z.entity ? "checked" : ""}> создавать сущность</label>
+          <label>тип сущности:
+            <select data-kind="1">
+              <option value="open_closed" ${kind === "open_closed" ? "selected" : ""}>Открыто / Закрыто</option>
+              <option value="on_off" ${kind === "on_off" ? "selected" : ""}>Включено / Выключено</option>
+            </select></label>
+          <button class="gv-btn" data-savez="1">Сохранить настройки зоны</button>
+        </div>
+        <div class="gv-hint">замеры: ${JSON.stringify(z.samples || {})}</div>`;
+      card.querySelector('[data-learn="open"]').onclick = () => this._learn(z.id, "open");
+      card.querySelector('[data-learn="closed"]').onclick = () => this._learn(z.id, "closed");
+      card.querySelector("[data-reset]").onclick = () => this._learn(z.id, null, "reset");
+      card.querySelector("[data-savez]").onclick = () => {
+        const patch = (this._settings.zones || []).map((x) => ({ ...x }));
+        const t = patch.find((x) => x.id === z.id);
+        t.entity = card.querySelector("[data-ent]").checked;
+        t.kind = card.querySelector("[data-kind]").value;
+        this._save({ zones: patch });
+      };
+      host.appendChild(card);
+    });
+  }
+
+  async _learn(zoneId, state, action) {
+    try {
+      const body = action === "reset" ? { zone_id: zoneId, action: "reset" } : { zone_id: zoneId, state };
+      const res = await this._hass.callApi("POST", "gate_vision/learn", body);
+      this._toast(res.message || "готово");
+      await this._load(true, true);
+      this._renderTab();
+    } catch (err) {
+      this._toast("Не удалось: " + (err.message || err));
+    }
+  }
+
+
+  _renderSchedules(host) {
+    const list = (this._settings?.schedules || []).slice();
+    const info = document.createElement("div");
+    info.className = "gv-hint";
+    info.innerHTML = "Автоматизации запускают реле ворот по расписанию (время местное). " +
+      "Можно добавить сколько нужно. Действие: «импульс» — просто нажать; " +
+      "«открыть»/«закрыть» — импульс только если ворота не в этом состоянии; «стоп» — если движутся.";
+    host.appendChild(info);
+
+    const render = () => {
+      const box = host.querySelector("#gvSchedList");
+      box.innerHTML = "";
+      list.forEach((item, idx) => {
+        const row = document.createElement("div");
+        row.className = "gv-ev";
+        row.innerHTML = `
+          <div class="gv-row">
+            <label><input type="checkbox" data-f="enabled" ${item.enabled ? "checked" : ""}> включено</label>
+            <input type="text" data-f="name" value="${item.name || ""}" placeholder="название" style="flex:1 1 120px">
+            <button class="gv-btn danger" style="padding:4px 9px" title="удалить">✕</button>
+          </div>
+          <div class="gv-row">
+            <label>время</label><input type="time" data-f="time" value="${item.time || "10:00"}">
+            <label>дни</label>
+            <select data-days>
+              ${[["ежедневно", "[0,1,2,3,4,5,6]"], ["будни (Пн–Пт)", "[0,1,2,3,4]"],
+                 ["выходные (Сб, Вс)", "[5,6]"], ["свой набор", "custom"]]
+                .map(([t, v]) => `<option value="${v}" ${(v !== "custom" && JSON.stringify(item.days || []) === v) ? "selected" : ""}>${t}</option>`).join("")}
+            </select>
+            <label>действие</label>
+            <select data-f="action">
+              <option value="impulse" ${item.action === "impulse" ? "selected" : ""}>импульс</option>
+              <option value="open" ${item.action === "open" ? "selected" : ""}>открыть</option>
+              <option value="close" ${item.action === "close" ? "selected" : ""}>закрыть</option>
+              <option value="stop" ${item.action === "stop" ? "selected" : ""}>стоп</option>
+            </select>
+          </div>
+          <div class="gv-ch" data-dayscustom style="display:none">
+            ${["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"].map((d, i) =>
+              `<label><input type="checkbox" data-day="${i}" ${(item.days || []).includes(i) ? "checked" : ""}> ${d}</label>`).join("")}
+          </div>
+          <div class="gv-meta">последний запуск: ${item.last_run ? item.last_run.replace("T", " ").slice(0, 19) : "—"}</div>`;
+        const daysSel = row.querySelector("[data-days]");
+        const custom = row.querySelector("[data-dayscustom]");
+        if (daysSel.value === "custom") custom.style.display = "";
+        daysSel.onchange = () => { custom.style.display = daysSel.value === "custom" ? "" : "none"; };
+        row.querySelector("button").onclick = () => { list.splice(idx, 1); render(); };
+        box.appendChild(row);
+      });
+    };
+
+    const wrap = document.createElement("div");
+    wrap.innerHTML = `<div id="gvSchedList"></div>
+      <div class="gv-ch" style="margin-top:8px">
+        <button class="gv-btn secondary" id="gvSchedAdd">+ Добавить автоматизацию</button>
+        <button class="gv-btn" id="gvSchedSave">Сохранить расписания</button>
+      </div>`;
+    host.appendChild(wrap);
+    render();
+
+    wrap.querySelector("#gvSchedAdd").onclick = () => {
+      list.push({ id: "s" + Date.now().toString().slice(-6), name: "Автоматизация " + (list.length + 1),
+                  enabled: true, time: "10:00", days: [0, 1, 2, 3, 4, 5, 6], action: "impulse" });
+      render();
+    };
+    wrap.querySelector("#gvSchedSave").onclick = () => {
+      const rows = [...wrap.querySelectorAll("#gvSchedList .gv-ev")];
+      const patch = rows.map((row, idx) => {
+        const daysSel = row.querySelector("[data-days]").value;
+        let days = list[idx].days || [0, 1, 2, 3, 4, 5, 6];
+        if (daysSel === "custom") {
+          days = [...row.querySelectorAll("[data-day]")].filter((c) => c.checked).map((c) => parseInt(c.dataset.day, 10));
+        } else {
+          days = JSON.parse(daysSel);
+        }
+        const get = (f) => { const el = row.querySelector(`[data-f="${f}"]`); return el ? (el.type === "checkbox" ? el.checked : el.value) : undefined; };
+        return { id: list[idx].id, name: get("name"), enabled: get("enabled"), time: get("time"),
+                 days, action: get("action"), last_run: list[idx].last_run || null };
+      });
+      this._save({ schedules: patch });
+    };
   }
 
   _renderCamera(host) {
