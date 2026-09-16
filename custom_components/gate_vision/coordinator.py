@@ -89,6 +89,7 @@ class GateVisionCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self.last_analysis: dict[str, Any] = {}
         self._lock = asyncio.Lock()
         self.control_enabled_applied = bool(settings.control.get("enabled"))
+        self.zone_entities_applied = sorted(z["id"] for z in settings.zones if z.get("entity"))
 
     # ---------------------------------------------------------------- сервис
     @property
@@ -333,29 +334,33 @@ class GateVisionCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self.hass.bus.async_fire(
             EVENT_STATE, {"event": event, "entry_id": self.entry.entry_id, **entry}
         )
-        self._save_event_frame(event)
+        await self._async_save_event_frame(event)
         _LOGGER.info("gate_vision: событие %s (%s)", event, payload.get("reason", ""))
         if not self.settings.learn_mode:
             await fire_reactions(self.hass, self.settings, event, entry)
 
-    def _save_event_frame(self, event: str) -> None:
-        """Сохранить кадр события (кольцо на диске) — для разбора и панели."""
+    async def _async_save_event_frame(self, event: str) -> None:
+        """Сохранить кадр события (кольцо на диске) — вне цикла событий."""
         if not self.last_frame:
             return
         try:
-            directory = Path(self.hass.config.path(EVENT_DIR_NAME, "events"))
-            directory.mkdir(parents=True, exist_ok=True)
-            stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-            (directory / f"{stamp}-{event}.jpg").write_bytes(self.last_frame)
-            # копия для картинки в уведомлениях (/local/gate_vision/last_event.jpg)
-            www_dir = Path(self.hass.config.path("www", EVENT_DIR_NAME))
-            www_dir.mkdir(parents=True, exist_ok=True)
-            (www_dir / "last_event.jpg").write_bytes(self.last_frame)
-            files = sorted(directory.glob("*.jpg"))
-            for old in files[:-EVENT_KEEP]:
-                old.unlink(missing_ok=True)
+            await self.hass.async_add_executor_job(self._save_event_frame_sync, event)
         except Exception as err:  # noqa: BLE001
             _LOGGER.debug("gate_vision: не сохранил кадр события: %s", err)
+
+    def _save_event_frame_sync(self, event: str) -> None:
+        """Запись кадра события на диск (вызывается в executor)."""
+        directory = Path(self.hass.config.path(EVENT_DIR_NAME, "events"))
+        directory.mkdir(parents=True, exist_ok=True)
+        stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+        (directory / f"{stamp}-{event}.jpg").write_bytes(self.last_frame)
+        # копия для картинки в уведомлениях (/local/gate_vision/last_event.jpg)
+        www_dir = Path(self.hass.config.path("www", EVENT_DIR_NAME))
+        www_dir.mkdir(parents=True, exist_ok=True)
+        (www_dir / "last_event.jpg").write_bytes(self.last_frame)
+        files = sorted(directory.glob("*.jpg"))
+        for old in files[:-EVENT_KEEP]:
+            old.unlink(missing_ok=True)
 
 
 def _rows(img: Image.Image):
