@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from datetime import datetime
 from typing import Any
 
@@ -22,6 +23,7 @@ from .const import (
     ACTION_OPEN,
     ACTION_STOP,
     EVENT_SCHEDULE,
+    EVENT_SCHEDULE_UNCONFIRMED,
     STATE_CLOSED,
     STATE_OPEN,
     STATE_UNKNOWN,
@@ -53,6 +55,10 @@ def normalize_schedule(item: dict[str, Any], index: int) -> dict[str, Any]:
     if action not in (ACTION_IMPULSE, ACTION_OPEN, ACTION_CLOSE, ACTION_STOP):
         action = ACTION_IMPULSE
 
+    require = str(item.get("require_state") or "any")
+    if require not in ("any", STATE_OPEN, STATE_CLOSED, "moving"):
+        require = "any"
+
     return {
         "id": str(item.get("id") or f"s{index}"),
         "name": str(item.get("name") or f"Автоматизация {index}"),
@@ -60,6 +66,8 @@ def normalize_schedule(item: dict[str, Any], index: int) -> dict[str, Any]:
         "time": time_value,
         "days": days,
         "action": action,
+        "require_state": require,  # выполнять, только если состояние совпадает
+        "verify": bool(item.get("verify", True)),  # проверять результат по камере
         "last_run": item.get("last_run"),
     }
 
@@ -120,52 +128,103 @@ class ScheduleRunner:
                 _LOGGER.warning("gate_vision: не сохранил last_run расписаний: %s", err)
 
     async def _run(self, item: dict[str, Any]) -> None:
-        """Выполнить действие расписания."""
+        """Выполнить действие расписания с проверкой состояния до и после."""
         action = item.get("action", ACTION_IMPULSE)
-        state = (self.coordinator.data or {}).get("state")
+        data = self.coordinator.data or {}
+        state = data.get("state")
+        moving = bool(data.get("moving"))
         name = item.get("name") or item.get("id")
+
+        # --- проверка состояния ПЕРЕД выполнением ---
+        require = item.get("require_state", "any")
+        if require != "any":
+            if require == "moving" and not moving:
+                _LOGGER.info("gate_vision: «%s» — ворота не движутся, пропуск", name)
+                await self._log_skip(item, "ворота не движутся")
+                return
+            if require in (STATE_OPEN, STATE_CLOSED) and state != require:
+                _LOGGER.info("gate_vision: «%s» — состояние не «%s», пропуск", name, require)
+                await self._log_skip(item, f"состояние {state} ≠ {require}")
+                return
 
         # «привести в состояние»: импульс только если это нужно
         if action == ACTION_OPEN and state == STATE_OPEN:
-            _LOGGER.info("gate_vision: расписание «%s» — уже открыто, пропуск", name)
+            await self._log_skip(item, "уже открыто")
             return
         if action == ACTION_CLOSE and state == STATE_CLOSED:
-            _LOGGER.info("gate_vision: расписание «%s» — уже закрыто, пропуск", name)
+            await self._log_skip(item, "уже закрыто")
             return
-        if action == ACTION_STOP and state not in (
-            STATE_OPEN,
-            STATE_CLOSED,
-            STATE_UNKNOWN,
-        ):
+        if action == ACTION_STOP and not moving:
+            await self._log_skip(item, "ворота не движутся")
             return
-        if action == ACTION_STOP and not (self.coordinator.data or {}).get("moving"):
-            _LOGGER.info(
-                "gate_vision: расписание «%s» — ворота не движутся, пропуск", name
-            )
-            return
-        if action in (ACTION_OPEN, ACTION_CLOSE) and state == STATE_UNKNOWN:
-            _LOGGER.warning(
-                "gate_vision: расписание «%s» — состояние неизвестно, пропуск", name
-            )
+        if action in (ACTION_OPEN, ACTION_CLOSE, ACTION_STOP) and state == STATE_UNKNOWN:
+            await self._log_skip(item, "состояние неизвестно")
             return
 
         try:
             text = await async_relay_pulse(self.hass, self.coordinator.settings.control)
         except HomeAssistantError as err:
             _LOGGER.warning("gate_vision: расписание «%s» не выполнено: %s", name, err)
+            await self._log_skip(item, f"ошибка реле: {err}")
             return
 
+        self._entry(
+            item,
+            f"расписание «{name}» ({item.get('time')}) — {action}; {text}",
+            state,
+            action,
+        )
+
+        # --- проверка результата ПОСЛЕ выполнения ---
+        if item.get("verify", True):
+            expected = {ACTION_OPEN: STATE_OPEN, ACTION_CLOSE: STATE_CLOSED}.get(action)
+            if expected:
+                ok = await self._wait_state(expected, timeout=int(item.get("verify_timeout", 45)))
+                if ok:
+                    _LOGGER.info("gate_vision: «%s» — подтверждено: %s", name, expected)
+                    self._entry(item, f"расписание «{name}»: подтверждено состояние «{expected}»",
+                                expected, action)
+                else:
+                    current = (self.coordinator.data or {}).get("state")
+                    _LOGGER.warning(
+                        "gate_vision: «%s» — состояние не стало «%s» (сейчас %s)", name, expected, current
+                    )
+                    self._entry(item, f"расписание «{name}»: НЕ подтверждено «{expected}» (сейчас {current})",
+                                current, action, event=EVENT_SCHEDULE_UNCONFIRMED)
+
+    async def _wait_state(self, expected: str, timeout: int = 45) -> bool:
+        """Дождаться состояния по камере (опрос каждые 2 с)."""
+        deadline = time.monotonic() + max(5, timeout)
+        while time.monotonic() < deadline:
+            await asyncio.sleep(2)
+            try:
+                await self.coordinator.async_request_refresh()
+            except Exception:  # noqa: BLE001
+                continue
+            if (self.coordinator.data or {}).get("state") == expected:
+                return True
+        return False
+
+    async def _log_skip(self, item: dict[str, Any], why: str) -> None:
+        name = item.get("name") or item.get("id")
+        self._entry(item, f"расписание «{name}» пропущено: {why}", None, item.get("action"))
+
+    def _entry(
+        self,
+        item: dict[str, Any],
+        reason: str,
+        state: str | None,
+        action: str | None,
+        event: str = EVENT_SCHEDULE,
+    ) -> None:
         entry = {
             "ts": dt_util.utcnow().isoformat(),
-            "event": EVENT_SCHEDULE,
+            "event": event,
             "state": state,
-            "reason": f"расписание «{name}» ({item.get('time')}) — {action}; {text}",
+            "reason": reason,
             "schedule": item.get("id"),
             "action": action,
         }
         self.coordinator.event_log.append(entry)
         self.coordinator._last_event = entry  # noqa: SLF001
-        self.hass.bus.async_fire(
-            EVENT_SCHEDULE, {"entry_id": self.coordinator.entry.entry_id, **entry}
-        )
-        _LOGGER.info("gate_vision: расписание «%s» — %s", name, action)
+        self.hass.bus.async_fire(event, {"entry_id": self.coordinator.entry.entry_id, **entry})
