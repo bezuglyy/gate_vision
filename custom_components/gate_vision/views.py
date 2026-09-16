@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from typing import Any
@@ -11,6 +12,8 @@ from homeassistant.components.http import HomeAssistantView
 from homeassistant.core import HomeAssistant
 
 from .const import (
+    AUTOCAL_COUNT,
+    AUTOCAL_DELAY,
     CONF_CONTROL,
     MAX_SAMPLES,
     CONF_LEARN_MODE,
@@ -225,14 +228,33 @@ class GateLearnView(HomeAssistantView):
         if zone is None:
             return web.json_response({"error": f"зона {zone_id} не найдена"}, status=404)
 
-        # свежий замер зоны
+        # сколько замеров собрать: 1 или автокалибровка (медиана из N)
         try:
-            await coordinator.async_request_refresh()
-        except Exception as err:  # noqa: BLE001
-            return web.json_response({"error": f"кадр недоступен: {err}"}, status=502)
-        measured = next((z for z in (coordinator.data or {}).get("zones", []) if z.get("id") == zone_id), None)
-        if measured is None:
-            return web.json_response({"error": "нет замера зоны"}, status=502)
+            count = max(1, min(AUTOCAL_COUNT, int(body.get("count") or 1)))
+        except (TypeError, ValueError):
+            count = 1
+
+        measured = None
+        values: list[float] = []
+        bands: list[bool] = []
+        for attempt in range(count):
+            if attempt:
+                await asyncio.sleep(AUTOCAL_DELAY)
+            try:
+                await coordinator.async_request_refresh()
+            except Exception as err:  # noqa: BLE001
+                return web.json_response({"error": f"кадр недоступен: {err}"}, status=502)
+            measured = next(
+                (z for z in (coordinator.data or {}).get("zones", []) if z.get("id") == zone_id), None
+            )
+            if measured is None:
+                return web.json_response({"error": "нет замера зоны"}, status=502)
+            values.append(float(measured["mean"]))
+            bands.append(bool(measured.get("band")))
+
+        import statistics
+
+        value = round(statistics.median(values), 1) if values else 0.0
 
         zones = [dict(z) for z in settings.zones]
         target = next(z for z in zones if z["id"] == zone_id)
@@ -247,8 +269,13 @@ class GateLearnView(HomeAssistantView):
             state = str(body.get("state") or "")
             if state not in ("open", "closed"):
                 return web.json_response({"error": "state должен быть open или closed"}, status=400)
-            samples[state] = (samples[state] + [float(measured["mean"])])[-MAX_SAMPLES:]
-            message = f"запомнено «{state}» = {measured['mean']} (всего {len(samples[state])})"
+            entry = {"mean": value, "band": (sum(bands) * 2 >= len(bands)) if bands else None}
+            samples[state] = (samples[state] + [entry])[-MAX_SAMPLES:]
+            message = (
+                f"запомнено «{state}» = {value}"
+                + (f" (медиана из {count} замеров)" if count > 1 else "")
+                + f", всего замеров {len(samples[state])}"
+            )
 
         target["samples"] = samples
         await settings.async_save({"zones": zones})
