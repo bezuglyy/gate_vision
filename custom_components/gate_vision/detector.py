@@ -31,6 +31,33 @@ from .const import (
 )
 
 
+def classify_zone(samples: dict[str, list[float]] | None, current: float) -> tuple[str, float]:
+    """Определить состояние зоны по обученным замерам яркости.
+
+    Обучение: пользователь приводит объект в состояние и «запоминает» замер.
+    Замеров на состояние может быть несколько (день, ночь, разное освещение) —
+    берём ближайший. Возвращает (состояние, уверенность 0..1).
+    """
+    samples = samples or {}
+    open_refs = [float(v) for v in (samples.get("open") or [])]
+    closed_refs = [float(v) for v in (samples.get("closed") or [])]
+    if not open_refs and not closed_refs:
+        return "unknown", 0.0
+    if open_refs and closed_refs:
+        d_open = min(abs(current - v) for v in open_refs)
+        d_closed = min(abs(current - v) for v in closed_refs)
+        mean_open = sum(open_refs) / len(open_refs)
+        mean_closed = sum(closed_refs) / len(closed_refs)
+        spread = abs(mean_open - mean_closed)
+        conf = min(1.0, abs(d_open - d_closed) / spread) if spread > 1e-6 else 0.0
+        return ("open" if d_open < d_closed else "closed"), round(conf, 2)
+    refs = open_refs or closed_refs
+    state = "open" if open_refs else "closed"
+    margin = max(8.0, 0.12 * (sum(refs) / len(refs)))
+    near = min(abs(current - v) for v in refs) <= margin
+    return (state, 0.6) if near else ("unknown", 0.3)
+
+
 def _runs(mask: np.ndarray) -> list[tuple[int, int]]:
     """Непрерывные отрезки True в одномерной маске."""
     out: list[tuple[int, int]] = []
@@ -297,13 +324,21 @@ def zone_measurements(
     for zone in zones:
         x0, y0, x1, y1 = _zone_box(zone, width, height)
         patch = gray[y0:y1, x0:x1]
+        mean = round(float(patch.mean()), 1) if patch.size else 0.0
+        state, conf = classify_zone(zone.get("samples"), mean)
         out.append(
             {
                 "id": zone["id"],
+                "name": zone.get("name"),
                 "role": zone["role"],
-                "mean": round(float(patch.mean()), 1) if patch.size else 0.0,
+                "kind": zone.get("kind"),
+                "entity": bool(zone.get("entity")),
+                "mean": mean,
                 "std": round(float(patch.std()), 1) if patch.size else 0.0,
                 "px": int(patch.size),
+                "state": state,
+                "conf": conf,
+                "samples": {k: len(v or []) for k, v in (zone.get("samples") or {}).items()},
             }
         )
     return out
