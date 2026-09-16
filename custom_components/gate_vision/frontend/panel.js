@@ -349,9 +349,14 @@ class GateVisionPanel extends HTMLElement {
     badge.className = `gv-badge ${state}`;
     badge.textContent = state === "open" ? "ОТКРЫТО" : state === "closed" ? "ЗАКРЫТО" : "НЕИЗВЕСТНО";
     const parts = [];
-    parts.push(s.mode === "ir" ? "режим: ночь/ИК" : "режим: день");
-    if (s.b_open !== undefined) parts.push(`зона «открыто»: ${s.b_open}`);
-    if (s.b_closed !== undefined) parts.push(`зона «закрыто»: ${s.b_closed}`);
+    const zs = s.zones || [];
+    const learned = zs.filter((z) => z.samples && ((z.samples.open || 0) + (z.samples.closed || 0)) > 0);
+    if (learned.length) {
+      learned.forEach((z) => parts.push(`${z.name}: ${z.mean} → ${z.state === "open" ? "ОТКРЫТО" : z.state === "closed" ? "ЗАКРЫТО" : "?"} (${z.conf})`));
+    } else {
+      zs.forEach((z) => parts.push(`${z.name}: ${z.mean}`));
+      parts.push("зоны не обучены — работают пороги");
+    }
     if (s.moving) parts.push("движется");
     if (s.stale) parts.push("устаревшее");
     if (s.camera_ok === false) parts.push("камера недоступна");
@@ -527,6 +532,14 @@ class GateVisionPanel extends HTMLElement {
   _renderThresholds(host) {
     const th = this._settings?.thresholds || {};
     const wrap = document.createElement("div");
+    const note = document.createElement("div");
+    note.className = "gv-hint";
+    note.innerHTML = "<b>Пороги нужны только если зоны не обучены.</b> Если ты обучил состояние зоны " +
+      "во вкладке «Обучение», интеграция сравнивает замер с обученными значениями и пороги не используются.";
+    wrap.appendChild(note);
+    const details = document.createElement("details");
+    details.innerHTML = "<summary style='cursor:pointer;margin:8px 0'>Дополнительно: пороги для работы без обучения</summary>";
+    wrap.appendChild(details);
     THRESHOLD_META.forEach(([key, title, min, max, step]) => {
       const row = document.createElement("div");
       row.className = "gv-row";
@@ -537,7 +550,7 @@ class GateVisionPanel extends HTMLElement {
       const val = row.querySelector(".gv-val");
       range.oninput = () => { val.textContent = range.value; };
       range.onchange = () => this._save({ thresholds: { [key]: parseFloat(range.value) } });
-      wrap.appendChild(row);
+      details.appendChild(row);
     });
     const hint = document.createElement("div");
     hint.className = "gv-hint";
