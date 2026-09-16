@@ -1,0 +1,571 @@
+/* gate-vision — панель Home Assistant: зоны, пороги, реагирования, журнал.
+ * Плагин самодостаточный: обычный custom element, без внешних зависимостей.
+ */
+
+const ROLE_COLORS = { closed: "#22c55e", open: "#f59e0b", ignore: "#64748b" };
+const ROLE_TITLES = { closed: "Закрыто (окна)", open: "Открыто (низ проёма)", ignore: "Исключение" };
+
+const THRESHOLD_META = [
+  ["street_low_t", "Порог «открыто» днём", 0, 255, 1],
+  ["dark_low_t", "Порог «открыто» ночью/ИК", 0, 255, 1],
+  ["bright", "«Светло» (пересвет окон)", 100, 255, 1],
+  ["frame_t", "Зажато тёмным (доля)", 0.2, 0.95, 0.05],
+  ["min_band_f", "Мин. высота полосы окон", 0.01, 0.3, 0.01],
+  ["max_band_f", "Макс. высота полосы окон", 0.2, 0.9, 0.05],
+  ["gray_sat", "Порог цвет/ч-б", 0.001, 0.1, 0.005],
+  ["move_diff", "Порог движения полотна", 1, 40, 1],
+];
+
+const EVENTS = [
+  ["opened", "Ворота открылись"],
+  ["closed", "Ворота закрылись"],
+  ["left_open", "Оставлены открытыми"],
+  ["moving", "Движение полотна"],
+  ["unknown", "Состояние не определяется"],
+  ["camera_lost", "Камера недоступна"],
+  ["camera_back", "Камера снова доступна"],
+];
+
+const CHANNELS = [
+  ["notify", "Push (notify)"],
+  ["persistent", "Уведомление в HA"],
+  ["tts", "Озвучка (TTS)"],
+  ["script", "Скрипт/служба"],
+  ["mqtt", "MQTT"],
+  ["webhook", "Webhook"],
+];
+
+class GateVisionPanel extends HTMLElement {
+  constructor() {
+    super();
+    this._hass = null;
+    this._panel = null;
+    this._tab = "thresholds";
+    this._state = null;
+    this._settings = null;
+    this._frameUrl = null;
+    this._live = true;
+    this._timer = null;
+    this._selectedZone = null;
+    this._drag = null;
+    this._newRole = "open";
+    this._log = [];
+  }
+
+  set hass(hass) {
+    const first = !this._hass;
+    this._hass = hass;
+    if (first) {
+      this._boot();
+    }
+  }
+
+  get hass() {
+    return this._hass;
+  }
+
+  set panel(panel) {
+    this._panel = panel;
+  }
+
+  set narrow(narrow) {
+    this._narrow = narrow;
+  }
+
+  connectedCallback() {
+    if (!this._root) this._build();
+  }
+
+  disconnectedCallback() {
+    if (this._timer) clearInterval(this._timer);
+  }
+
+  /* ------------------------------------------------------------------ каркас */
+  _build() {
+    this._root = document.createElement("div");
+    this._root.className = "gv-root";
+    this._root.innerHTML = `
+      <style>
+        .gv-root { padding: 16px; font-family: var(--paper-font-body1_-_font-family, Roboto, sans-serif);
+                   color: var(--primary-text-color); }
+        .gv-head { display:flex; flex-wrap:wrap; gap:12px; align-items:center; margin-bottom:12px; }
+        .gv-badge { padding:6px 14px; border-radius:20px; font-weight:600; font-size:15px; color:#fff; }
+        .gv-badge.closed { background:#15803d; }
+        .gv-badge.open { background:#b45309; }
+        .gv-badge.unknown { background:#64748b; }
+        .gv-meta { font-size:13px; opacity:.8; }
+        .gv-btn { background: var(--primary-color); color:#fff; border:none; border-radius:6px;
+                  padding:7px 14px; cursor:pointer; font-size:14px; }
+        .gv-btn.secondary { background: var(--secondary-background-color); color: var(--primary-text-color);
+                            border:1px solid var(--divider-color); }
+        .gv-btn.danger { background:#b91c1c; }
+        .gv-btn:hover { filter: brightness(1.08); }
+        .gv-grid { display:grid; grid-template-columns: minmax(320px, 1fr) minmax(340px, 460px); gap:16px; }
+        @media (max-width: 1100px) { .gv-grid { grid-template-columns: 1fr; } }
+        .gv-card { background: var(--card-background-color); border-radius:10px; padding:12px;
+                   box-shadow: var(--ha-card-box-shadow, 0 1px 3px rgba(0,0,0,.2)); }
+        .gv-canvas-wrap { position:relative; background:#111; border-radius:8px; overflow:hidden; }
+        canvas { display:block; width:100%; cursor:crosshair; touch-action:none; }
+        .gv-tools { display:flex; flex-wrap:wrap; gap:8px; align-items:center; margin:10px 0; font-size:13px; }
+        .gv-tools select, .gv-tools input { background: var(--secondary-background-color);
+            color: var(--primary-text-color); border:1px solid var(--divider-color); border-radius:6px; padding:5px 8px; }
+        .gv-zonelist { display:flex; flex-direction:column; gap:6px; margin-top:8px; }
+        .gv-zone { display:flex; align-items:center; gap:8px; font-size:13px; padding:5px 8px; border-radius:6px;
+                   background: var(--secondary-background-color); cursor:pointer; }
+        .gv-zone.sel { outline:2px solid var(--primary-color); }
+        .gv-dot { width:12px; height:12px; border-radius:3px; flex:0 0 auto; }
+        .gv-tabs { display:flex; gap:6px; flex-wrap:wrap; margin-bottom:10px; }
+        .gv-tab { padding:7px 12px; border-radius:6px 6px 0 0; cursor:pointer; font-size:14px;
+                  background: var(--secondary-background-color); border:1px solid var(--divider-color); border-bottom:none; }
+        .gv-tab.active { background: var(--primary-color); color:#fff; border-color: var(--primary-color); }
+        .gv-row { display:flex; align-items:center; gap:10px; margin:7px 0; font-size:13px; }
+        .gv-row label { flex:1 1 auto; }
+        .gv-row input[type=range] { flex: 1 1 140px; }
+        .gv-row input[type=text], .gv-row input[type=number] { flex:1 1 140px;
+            background: var(--secondary-background-color); color: var(--primary-text-color);
+            border:1px solid var(--divider-color); border-radius:6px; padding:5px 8px; }
+        .gv-val { min-width:52px; text-align:right; opacity:.85; }
+        .gv-ev { border:1px solid var(--divider-color); border-radius:8px; padding:8px; margin:8px 0; }
+        .gv-ev h4 { margin:0 0 6px; font-size:14px; }
+        .gv-ch { display:flex; flex-wrap:wrap; gap:10px; margin:6px 0; font-size:13px; }
+        .gv-ch label { display:flex; align-items:center; gap:4px; }
+        .gv-log { max-height:420px; overflow:auto; font-size:13px; }
+        .gv-log div { padding:5px 6px; border-bottom:1px solid var(--divider-color); }
+        .gv-hint { font-size:12px; opacity:.7; margin-top:6px; }
+        .gv-ok { color:#15803d; } .gv-warn { color:#b45309; } .gv-err { color:#b91c1c; }
+      </style>
+      <div class="gv-head">
+        <div class="gv-badge unknown" id="gvState">…</div>
+        <div class="gv-meta" id="gvMeta"></div>
+        <div style="flex:1 1 auto"></div>
+        <label class="gv-meta"><input type="checkbox" id="gvLive" checked> живой кадр</label>
+        <button class="gv-btn secondary" id="gvRefresh">Обновить</button>
+        <button class="gv-btn" id="gvTest">Проверить сейчас</button>
+      </div>
+      <div class="gv-grid">
+        <div class="gv-card">
+          <div class="gv-canvas-wrap"><canvas id="gvCanvas" width="1280" height="720"></canvas></div>
+          <div class="gv-tools">
+            <span>Добавить зону:</span>
+            <select id="gvNewRole">
+              <option value="open">Открыто (низ проёма)</option>
+              <option value="closed">Закрыто (окна)</option>
+              <option value="ignore">Исключение</option>
+            </select>
+            <span class="gv-hint">ЛКМ по пустому месту — нарисовать; тянуть — сдвинуть; угол — изменить размер</span>
+            <div style="flex:1 1 auto"></div>
+            <button class="gv-btn secondary" id="gvZonesDefault">Зоны по умолчанию</button>
+            <button class="gv-btn" id="gvSaveZones">Сохранить зоны</button>
+          </div>
+          <div class="gv-zonelist" id="gvZoneList"></div>
+        </div>
+        <div class="gv-card">
+          <div class="gv-tabs">
+            <div class="gv-tab active" data-tab="thresholds">Пороги</div>
+            <div class="gv-tab" data-tab="reactions">Реагирования</div>
+            <div class="gv-tab" data-tab="control">Управление</div>
+            <div class="gv-tab" data-tab="camera">Камера</div>
+            <div class="gv-tab" data-tab="log">Журнал</div>
+          </div>
+          <div id="gvTabBody"></div>
+        </div>
+      </div>
+    `;
+    this.appendChild(this._root);
+
+    this._canvas = this._root.querySelector("#gvCanvas");
+    this._ctx = this._canvas.getContext("2d");
+    this._canvas.addEventListener("pointerdown", (e) => this._onPointerDown(e));
+    this._canvas.addEventListener("pointermove", (e) => this._onPointerMove(e));
+    this._canvas.addEventListener("pointerup", (e) => this._onPointerUp(e));
+    this._canvas.addEventListener("pointerleave", () => { this._drag = null; });
+
+    this._root.querySelector("#gvRefresh").onclick = () => this._load(true);
+    this._root.querySelector("#gvTest").onclick = () => this._test();
+    this._root.querySelector("#gvLive").onchange = (e) => {
+      this._live = e.target.checked;
+      this._scheduleLive();
+    };
+    this._root.querySelector("#gvNewRole").onchange = (e) => { this._newRole = e.target.value; };
+    this._root.querySelector("#gvSaveZones").onclick = () => this._save({ zones: this._settings.zones });
+    this._root.querySelector("#gvZonesDefault").onclick = () => this._loadDefaults();
+    this._root.querySelectorAll(".gv-tab").forEach((el) => {
+      el.onclick = () => {
+        this._tab = el.dataset.tab;
+        this._root.querySelectorAll(".gv-tab").forEach((t) => t.classList.toggle("active", t === el));
+        this._renderTab();
+      };
+    });
+
+    this._scheduleLive();
+  }
+
+  async _boot() {
+    await this._load();
+    this._renderTab();
+  }
+
+  _scheduleLive() {
+    if (this._timer) clearInterval(this._timer);
+    if (!this._live) return;
+    this._timer = setInterval(() => this._load(true, true), 5000);
+  }
+
+  /* ------------------------------------------------------------------ данные */
+  async _load(fresh = false, quiet = false) {
+    try {
+      const q = fresh ? "?fresh=1" : "";
+      const data = await this._hass.callApi("GET", `gate_vision/state${q}`);
+      this._state = data.analysis || {};
+      this._settings = data.settings || this._settings;
+      this._log = data.event_log || this._log;
+      await this._loadFrame(fresh);
+      this._renderHead();
+      if (this._tab === "log") this._renderTab();
+      this._draw();
+    } catch (err) {
+      if (!quiet) this._toast(`Не удалось получить состояние: ${err.message || err}`);
+    }
+  }
+
+  async _loadFrame(fresh) {
+    try {
+      const qs = new URLSearchParams();
+      if (fresh) qs.set("fresh", "1");
+      qs.set("_", String(Date.now()));
+      const resp = await this._hass.fetchWithAuth(`/api/gate_vision/frame?${qs.toString()}`);
+      if (!resp.ok) return;
+      const blob = await resp.blob();
+      const img = new Image();
+      img.onload = () => {
+        this._canvas.width = img.width;
+        this._canvas.height = img.height;
+        this._img = img;
+        this._draw();
+      };
+      img.src = URL.createObjectURL(blob);
+    } catch (err) {
+      /* кадр недоступен — не мешаем работе */
+    }
+  }
+
+  async _test() {
+    try {
+      const res = await this._hass.callApi("POST", "gate_vision/test");
+      this._state = res.analysis || this._state;
+      this._renderHead();
+      this._draw();
+      this._toast(`Проверка: ${res.analysis?.state || "?"}`);
+    } catch (err) {
+      this._toast(`Ошибка проверки: ${err.message || err}`);
+    }
+  }
+
+  async _save(patch) {
+    try {
+      const res = await this._hass.callApi("POST", "gate_vision/settings?refresh=1", patch);
+      this._settings = res.settings || this._settings;
+      this._toast("Сохранено");
+      await this._load(false, true);
+    } catch (err) {
+      this._toast(`Не сохранилось: ${err.message || err}`);
+    }
+  }
+
+  async _loadDefaults() {
+    const z1 = { id: "z1", name: "Окна полотна (закрыто)", role: "closed", x: 0.57, y: 0.10, w: 0.25, h: 0.25 };
+    const z2 = { id: "z2", name: "Низ проёма (открыто)", role: "open", x: 0.57, y: 0.40, w: 0.25, h: 0.15 };
+    await this._save({ zones: [z1, z2] });
+  }
+
+  /* ------------------------------------------------------------------ отрисовка */
+  _renderHead() {
+    const s = this._state || {};
+    const badge = this._root.querySelector("#gvState");
+    const state = s.state || "unknown";
+    badge.className = `gv-badge ${state}`;
+    badge.textContent = state === "open" ? "ОТКРЫТО" : state === "closed" ? "ЗАКРЫТО" : "НЕИЗВЕСТНО";
+    const parts = [];
+    parts.push(s.mode === "ir" ? "режим: ночь/ИК" : "режим: день");
+    if (s.b_open !== undefined) parts.push(`зона «открыто»: ${s.b_open}`);
+    if (s.b_closed !== undefined) parts.push(`зона «закрыто»: ${s.b_closed}`);
+    if (s.moving) parts.push("движется");
+    if (s.stale) parts.push("устаревшее");
+    if (s.camera_ok === false) parts.push("камера недоступна");
+    if (this._settings?.learn_mode) parts.push("режим обучения");
+    this._root.querySelector("#gvMeta").textContent = parts.join(" · ");
+    this._root.querySelector("#gvMeta").title = s.reason || "";
+  }
+
+  _draw() {
+    const ctx = this._ctx;
+    const w = this._canvas.width, h = this._canvas.height;
+    ctx.clearRect(0, 0, w, h);
+    if (this._img) ctx.drawImage(this._img, 0, 0, w, h);
+    else { ctx.fillStyle = "#111"; ctx.fillRect(0, 0, w, h); }
+    const zones = this._settings?.zones || [];
+    const line = Math.max(2, Math.round(w / 500));
+    zones.forEach((z) => {
+      const x = z.x * w, y = z.y * h, zw = z.w * w, zh = z.h * h;
+      const color = ROLE_COLORS[z.role] || "#fff";
+      ctx.strokeStyle = color;
+      ctx.lineWidth = z.id === this._selectedZone ? line * 2 : line;
+      ctx.strokeRect(x, y, zw, zh);
+      ctx.fillStyle = color + "22";
+      ctx.fillRect(x, y, zw, zh);
+      ctx.font = `${Math.round(w / 60)}px sans-serif`;
+      ctx.fillStyle = color;
+      const label = `${ROLE_TITLES[z.role] || z.role}: ${z.name}`;
+      ctx.fillText(label, x + 4, Math.max(14, y - 4));
+      // уголок для изменения размера
+      ctx.fillStyle = color;
+      ctx.fillRect(x + zw - line * 4, y + zh - line * 4, line * 4, line * 4);
+    });
+  }
+
+  _renderZoneList() {
+    const host = this._root.querySelector("#gvZoneList");
+    const zones = this._settings?.zones || [];
+    host.innerHTML = "";
+    zones.forEach((z) => {
+      const row = document.createElement("div");
+      row.className = "gv-zone" + (z.id === this._selectedZone ? " sel" : "");
+      row.innerHTML = `<span class="gv-dot" style="background:${ROLE_COLORS[z.role]}"></span>
+        <input type="text" value="${z.name}" style="flex:1 1 auto;background:transparent;border:none;color:inherit">
+        <select>${Object.keys(ROLE_TITLES).map((r) =>
+          `<option value="${r}" ${r === z.role ? "selected" : ""}>${ROLE_TITLES[r]}</option>`).join("")}</select>
+        <button class="gv-btn danger" style="padding:4px 9px">✕</button>`;
+      row.onclick = (e) => { if (e.target.tagName === "BUTTON" || e.target.tagName === "INPUT" || e.target.tagName === "SELECT") return;
+        this._selectedZone = z.id; this._renderZoneList(); this._draw(); };
+      row.querySelector("input").onchange = (e) => { z.name = e.target.value; };
+      row.querySelector("select").onchange = (e) => { z.role = e.target.value; this._renderZoneList(); this._draw(); };
+      row.querySelector("button").onclick = () => {
+        this._settings.zones = zones.filter((x) => x.id !== z.id);
+        this._selectedZone = null;
+        this._renderZoneList(); this._draw();
+      };
+      host.appendChild(row);
+    });
+  }
+
+  _renderTab() {
+    const body = this._root.querySelector("#gvTabBody");
+    body.innerHTML = "";
+    if (this._tab === "thresholds") this._renderThresholds(body);
+    else if (this._tab === "reactions") this._renderReactions(body);
+    else if (this._tab === "control") this._renderControl(body);
+    else if (this._tab === "camera") this._renderCamera(body);
+    else this._renderLog(body);
+    this._renderZoneList();
+  }
+
+  _renderThresholds(host) {
+    const th = this._settings?.thresholds || {};
+    const wrap = document.createElement("div");
+    THRESHOLD_META.forEach(([key, title, min, max, step]) => {
+      const row = document.createElement("div");
+      row.className = "gv-row";
+      row.innerHTML = `<label title="${key}">${title}</label>
+        <input type="range" min="${min}" max="${max}" step="${step}" value="${th[key] ?? min}">
+        <span class="gv-val">${th[key] ?? "—"}</span>`;
+      const range = row.querySelector("input");
+      const val = row.querySelector(".gv-val");
+      range.oninput = () => { val.textContent = range.value; };
+      range.onchange = () => this._save({ thresholds: { [key]: parseFloat(range.value) } });
+      wrap.appendChild(row);
+    });
+    const hint = document.createElement("div");
+    hint.className = "gv-hint";
+    hint.textContent = "Пороги применяются сразу. День: зона «открыто» светлее порога → ОТКРЫТО. Ночь/ИК: темнее порога → ОТКРЫТО.";
+    wrap.appendChild(hint);
+    const btn = document.createElement("button");
+    btn.className = "gv-btn secondary";
+    btn.textContent = "Вернуть пороги по умолчанию";
+    btn.onclick = () => this._save({ thresholds: {
+      street_low_t: 140, dark_low_t: 60, bright: 190, frame_t: 0.65,
+      min_band_f: 0.08, max_band_f: 0.55, gray_sat: 0.02, frame_min_mean: 15, move_diff: 6 } });
+    wrap.appendChild(btn);
+    host.appendChild(wrap);
+  }
+
+  _renderReactions(host) {
+    const reactions = this._settings?.reactions || {};
+    EVENTS.forEach(([key, title]) => {
+      const cfg = reactions[key] || {};
+      const card = document.createElement("div");
+      card.className = "gv-ev";
+      card.innerHTML = `
+        <h4><label><input type="checkbox" data-f="enabled" ${cfg.enabled ? "checked" : ""}> ${title}</label></h4>
+        <div class="gv-ch">${CHANNELS.map(([ch, chTitle]) =>
+          `<label><input type="checkbox" data-ch="${ch}" ${(cfg.channels || []).includes(ch) ? "checked" : ""}> ${chTitle}</label>`).join("")}</div>
+        <div class="gv-row"><label>notify-служба</label><input type="text" data-f="notify_service" value="${cfg.notify_service || ""}" placeholder="notify.mobile_app_iphone_administrator"></div>
+        <div class="gv-row"><label>TTS-сущность</label><input type="text" data-f="tts_entity" value="${cfg.tts_entity || ""}" placeholder="tts.edge_tts"></div>
+        <div class="gv-row"><label>media_player для TTS</label><input type="text" data-f="tts_media_player" value="${cfg.tts_media_player || ""}" placeholder="media_player.baza_speaker"></div>
+        <div class="gv-row"><label>Скрипт/служба</label><input type="text" data-f="script_entity" value="${cfg.script_entity || ""}" placeholder="script.gate_opened"></div>
+        <div class="gv-row"><label>MQTT-топик</label><input type="text" data-f="mqtt_topic" value="${cfg.mqtt_topic || ""}" placeholder="gate_vision/event"></div>
+        <div class="gv-row"><label>Webhook URL</label><input type="text" data-f="webhook_url" value="${cfg.webhook_url || ""}" placeholder="http://..."></div>
+        <div class="gv-row"><label>Текст сообщения</label><input type="text" data-f="message" value="${cfg.message || ""}" placeholder="(по умолчанию)"></div>
+        <div class="gv-row"><label>Повтор, мин</label><input type="number" data-f="repeat_min" min="0" max="720" value="${cfg.repeat_min || 0}"></div>
+        <div class="gv-row"><label>Тихие часы с</label><input type="text" data-f="quiet_from" value="${cfg.quiet_from || ""}" placeholder="23:00">
+                         <label>по</label><input type="text" data-f="quiet_to" value="${cfg.quiet_to || ""}" placeholder="07:00"></div>
+        <button class="gv-btn" data-save="${key}">Сохранить</button>`;
+      card.querySelector("button[data-save]").onclick = () => {
+        const patch = {};
+        card.querySelectorAll("[data-f]").forEach((el) => {
+          const f = el.dataset.f;
+          patch[f] = el.type === "checkbox" ? el.checked
+            : el.type === "number" ? parseFloat(el.value || "0") : el.value;
+        });
+        patch.channels = [...card.querySelectorAll("[data-ch]")].filter((c) => c.checked).map((c) => c.dataset.ch);
+        this._save({ reactions: { [key]: patch } });
+      };
+      host.appendChild(card);
+    });
+  }
+
+  _renderControl(host) {
+    const c = this._settings?.control || {};
+    const wrap = document.createElement("div");
+    wrap.innerHTML = `
+      <div class="gv-row"><label><input type="checkbox" data-f="enabled" ${c.enabled ? "checked" : ""}> Разрешить управление воротами</label></div>
+      <div class="gv-row"><label>Способ</label>
+        <select data-f="mode">
+          <option value="switch_impulse" ${c.mode !== "mqtt_impulse" ? "selected" : ""}>Сущность реле (switch.*)</option>
+          <option value="mqtt_impulse" ${c.mode === "mqtt_impulse" ? "selected" : ""}>MQTT-топик реле</option>
+        </select></div>
+      <div class="gv-row"><label>Сущность реле</label><input type="text" data-f="switch_entity" value="${c.switch_entity || ""}" placeholder="switch.dingtian_relay8777832_switch26"></div>
+      <div class="gv-row"><label>MQTT-топик</label><input type="text" data-f="mqtt_topic" value="${c.mqtt_topic || ""}" placeholder="dingtian/relay8777832/in/r26"></div>
+      <div class="gv-row"><label>Длительность импульса, мс</label><input type="number" data-f="impulse_ms" value="${c.impulse_ms || 800}"></div>
+      <div class="gv-row"><label>Ожидание подтверждения, с</label><input type="number" data-f="confirm_timeout" value="${c.confirm_timeout || 45}"></div>
+      <div class="gv-row"><label><input type="checkbox" data-f="check_clear_before_close" ${c.check_clear_before_close ? "checked" : ""}> Перед закрытием проверять камеру</label></div>
+      <div class="gv-hint">Пока управление выключено, сущность cover не создаётся — интеграция только читает состояние.
+      Включение потребует подтверждения номера реле ворот.</div>
+      <button class="gv-btn">Сохранить</button>`;
+    wrap.querySelector("button").onclick = () => {
+      const patch = {};
+      wrap.querySelectorAll("[data-f]").forEach((el) => {
+        patch[el.dataset.f] = el.type === "checkbox" ? el.checked
+          : el.type === "number" ? parseFloat(el.value || "0") : el.value;
+      });
+      this._save({ control: patch });
+    };
+    host.appendChild(wrap);
+  }
+
+  _renderCamera(host) {
+    const s = this._settings || {};
+    const a = this._state || {};
+    const wrap = document.createElement("div");
+    wrap.innerHTML = `
+      <div class="gv-row"><label>Кадр (RTSP, имя потока или URL)</label>
+        <input type="text" data-f="snapshot_url" value="${s.snapshot_url || ""}"></div>
+      <div class="gv-row"><label>go2rtc</label>
+        <input type="text" data-f="go2rtc_base" value="${s.go2rtc_base || ""}"></div>
+      <div class="gv-row"><label>Интервал опроса, с</label>
+        <input type="number" data-f="scan_interval" value="${s.scan_interval || 5}"></div>
+      <div class="gv-row"><label>Сообщать, что открыты дольше, мин</label>
+        <input type="number" data-f="left_open_min" value="${s.left_open_min || 15}"></div>
+      <div class="gv-row"><label><input type="checkbox" data-f="learn_mode" ${s.learn_mode ? "checked" : ""}> Режим обучения (только пишет, не сообщает)</label></div>
+      <button class="gv-btn">Сохранить</button>
+      <div class="gv-hint">Кадр: ${a.frame || "—"} · режим: ${a.mode || "—"} · средняя насыщенность: ${a.mean_sat ?? "—"}<br>
+      Причина решения: ${a.reason || "—"}</div>`;
+    wrap.querySelector("button").onclick = () => {
+      const patch = {};
+      wrap.querySelectorAll("[data-f]").forEach((el) => {
+        patch[el.dataset.f] = el.type === "checkbox" ? el.checked
+          : el.type === "number" ? parseFloat(el.value || "0") : el.value;
+      });
+      this._save(patch);
+    };
+    host.appendChild(wrap);
+  }
+
+  _renderLog(host) {
+    const wrap = document.createElement("div");
+    wrap.className = "gv-log";
+    const events = (this._log || []).slice().reverse();
+    if (!events.length) wrap.textContent = "Пока событий нет";
+    events.forEach((e) => {
+      const div = document.createElement("div");
+      const time = (e.ts || "").replace("T", " ").slice(0, 19);
+      div.innerHTML = `<b>${time}</b> — ${e.event || ""} <span class="gv-meta">${e.reason || ""}</span>`;
+      wrap.appendChild(div);
+    });
+    host.appendChild(wrap);
+  }
+
+  /* ------------------------------------------------------------------ зоны мышью */
+  _pos(e) {
+    const rect = this._canvas.getBoundingClientRect();
+    return {
+      x: (e.clientX - rect.left) / rect.width,
+      y: (e.clientY - rect.top) / rect.height,
+    };
+  }
+
+  _hitZone(p) {
+    const zones = (this._settings?.zones || []).slice().reverse();
+    for (const z of zones) {
+      if (p.x >= z.x && p.x <= z.x + z.w && p.y >= z.y && p.y <= z.y + z.h) {
+        const nearCorner =
+          p.x > z.x + z.w - 0.04 && p.y > z.y + z.h - 0.04;
+        return { zone: z, resize: nearCorner };
+      }
+    }
+    return null;
+  }
+
+  _onPointerDown(e) {
+    if (!this._settings) return;
+    const p = this._pos(e);
+    const hit = this._hitZone(p);
+    if (hit) {
+      this._selectedZone = hit.zone.id;
+      this._drag = { zone: hit.zone, resize: hit.resize, start: p, orig: { ...hit.zone } };
+    } else {
+      const id = `z${Date.now().toString().slice(-6)}`;
+      const zone = { id, name: `Зона ${id}`, role: this._newRole, x: p.x, y: p.y, w: 0.05, h: 0.05 };
+      this._settings.zones = [...(this._settings.zones || []), zone];
+      this._selectedZone = id;
+      this._drag = { zone, resize: true, start: p, orig: { ...zone } };
+    }
+    this._renderZoneList();
+    this._draw();
+  }
+
+  _onPointerMove(e) {
+    if (!this._drag) return;
+    const p = this._pos(e);
+    const { zone, orig, start, resize } = this._drag;
+    const dx = p.x - start.x, dy = p.y - start.y;
+    if (resize) {
+      zone.w = Math.min(1 - orig.x, Math.max(0.01, orig.w + dx));
+      zone.h = Math.min(1 - orig.y, Math.max(0.01, orig.h + dy));
+    } else {
+      zone.x = Math.min(1 - orig.w, Math.max(0, orig.x + dx));
+      zone.y = Math.min(1 - orig.h, Math.max(0, orig.y + dy));
+    }
+    this._draw();
+  }
+
+  _onPointerUp() {
+    if (this._drag) {
+      const { zone } = this._drag;
+      ["x", "y", "w", "h"].forEach((k) => { zone[k] = Math.round(zone[k] * 10000) / 10000; });
+    }
+    this._drag = null;
+  }
+
+  _toast(message) {
+    const el = document.createElement("div");
+    el.textContent = message;
+    el.style.cssText = "position:fixed;bottom:22px;left:50%;transform:translateX(-50%);" +
+      "background:#111;color:#fff;padding:10px 18px;border-radius:8px;z-index:9999;font-size:14px";
+    document.body.appendChild(el);
+    setTimeout(() => el.remove(), 2600);
+  }
+}
+
+if (!customElements.get("gate-vision-panel")) {
+  customElements.define("gate-vision-panel", GateVisionPanel);
+}
