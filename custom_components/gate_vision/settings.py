@@ -15,8 +15,12 @@ from homeassistant.core import HomeAssistant
 
 from .const import (
     CONF_CAMERA_ENTITY,
+    CONF_SCHEDULES,
     CONF_CONTROL,
     DEFAULT_ZONES,
+    KIND_OPEN_CLOSED,
+    MAX_SAMPLES,
+    ZONE_KINDS,
     CONF_LEARN_MODE,
     CONF_REACTIONS,
     CONF_THRESHOLDS,
@@ -54,6 +58,14 @@ def normalize_zone(zone: dict[str, Any], index: int) -> dict[str, Any]:
         w = 1.0 - x
     if y + h > 1.0:
         h = 1.0 - y
+    samples_raw = zone.get("samples") if isinstance(zone.get("samples"), dict) else {}
+    samples = {
+        state: [float(v) for v in (samples_raw.get(state) or []) if _is_number(v)][-MAX_SAMPLES:]
+        for state in ("open", "closed")
+    }
+    kind = str(zone.get("kind") or KIND_OPEN_CLOSED)
+    if kind not in ZONE_KINDS:
+        kind = KIND_OPEN_CLOSED
     return {
         "id": str(zone.get("id") or f"z{index}"),
         "name": str(zone.get("name") or f"Зона {index}"),
@@ -62,6 +74,9 @@ def normalize_zone(zone: dict[str, Any], index: int) -> dict[str, Any]:
         "y": round(y, 4),
         "w": round(max(w, 0.005), 4),
         "h": round(max(h, 0.005), 4),
+        "entity": bool(zone.get("entity", False)),
+        "kind": kind,
+        "samples": samples,
     }
 
 
@@ -114,6 +129,15 @@ class Settings:
         control.update(merged.get(CONF_CONTROL) or {})
         self.control: dict[str, Any] = control
 
+        from .schedules import normalize_schedule
+
+        raw_schedules = merged.get(CONF_SCHEDULES)
+        if not isinstance(raw_schedules, list):
+            raw_schedules = []
+        self.schedules: list[dict] = [
+            normalize_schedule(item, i + 1) for i, item in enumerate(raw_schedules) if isinstance(item, dict)
+        ]
+
         self.learn_mode: bool = bool(merged.get(CONF_LEARN_MODE, False))
         self.left_open_min: int = int(
             merged.get("left_open_min", DEFAULT_LEFT_OPEN_MIN)
@@ -146,6 +170,12 @@ class Settings:
                     if event in reactions and isinstance(cfg, dict):
                         reactions[event].update(cfg)
                 options[CONF_REACTIONS] = reactions
+            elif key == CONF_SCHEDULES and isinstance(value, list):
+                from .schedules import normalize_schedule
+
+                options[CONF_SCHEDULES] = [
+                    normalize_schedule(item, i + 1) for i, item in enumerate(value) if isinstance(item, dict)
+                ]
             elif key == CONF_CONTROL and isinstance(value, dict):
                 control = dict(self.control)
                 control.update(value)
@@ -168,6 +198,7 @@ class Settings:
             "zones": self.zones,
             "reactions": self.reactions,
             "control": self.control,
+            "schedules": self.schedules,
             "learn_mode": self.learn_mode,
             "left_open_min": self.left_open_min,
         }
