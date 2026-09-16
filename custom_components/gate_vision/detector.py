@@ -84,43 +84,82 @@ def _apply_ignore(gray: np.ndarray, zones: list[dict[str, Any]]) -> np.ndarray:
     return out
 
 
+def _merge_runs(runs: list[tuple[int, int]], gap: int) -> list[tuple[int, int]]:
+    """Склеить отрезки, разделённые промежутком не больше gap.
+
+    Между рядами окон проходит перемычка полотна — она рвёт «полосу окон» на части.
+    """
+    if not runs:
+        return []
+    merged = [runs[0]]
+    for start, end in runs[1:]:
+        prev_start, prev_end = merged[-1]
+        if start - prev_end - 1 <= gap:
+            merged[-1] = (prev_start, end)
+        else:
+            merged.append((start, end))
+    return merged
+
+
 def _window_band(
     rows: np.ndarray,
     y_from: int,
     y_to: int,
     thresholds: dict[str, float],
+    span: int,
 ) -> tuple[dict[str, Any] | None, list[dict[str, Any]]]:
-    """Найти полосу окон: яркая зона, зажатая тёмным полотном сверху и снизу."""
+    """Найти полосу окон полотна.
+
+    Окна — это участок, который резко отличается от полотна и **зажат полотном
+    сверху и снизу**. Работает в обе стороны:
+      * днём окна светятся (яркая полоса на тёмном полотне);
+      * ночью/в ИК окна тёмные (тёмная полоса на подсвеченном полотне).
+
+    ``span`` — высота проёма до линии пола: по ней считаются допустимые размеры
+    полосы (а не по зоне поиска, иначе большая зона ломает проверку).
+    """
     bright = thresholds.get("bright", DEFAULT_THRESHOLDS["bright"])
+    dark_band = thresholds.get("dark_band", DEFAULT_THRESHOLDS["dark_band"])
     frame_t = thresholds.get("frame_t", DEFAULT_THRESHOLDS["frame_t"])
     min_band_f = thresholds.get("min_band_f", DEFAULT_THRESHOLDS["min_band_f"])
     max_band_f = thresholds.get("max_band_f", DEFAULT_THRESHOLDS["max_band_f"])
-    span = max(1, y_to - y_from)
 
+    merge_gap = max(24, int(0.08 * span))  # перемычка между рядами окон
     bands: list[dict[str, Any]] = []
-    for start, end in _runs(np.nan_to_num(rows[y_from:y_to], nan=0.0) > bright):
-        start += y_from
-        end += y_from
-        height_px = end - start + 1
-        if height_px < min_band_f * span or height_px > max_band_f * span:
-            continue
-        band_mean = float(np.nanmean(rows[start : end + 1]))
-        above_slice = rows[max(0, start - 18) : start]
-        below_slice = rows[end + 20 : min(len(rows), end + 90)]
-        above = float(np.nanmean(above_slice)) if above_slice.size else 0.0
-        below = float(np.nanmean(below_slice)) if below_slice.size else 0.0
-        windows = above < frame_t * band_mean and below < frame_t * band_mean
-        bands.append(
-            {
+    checks = (
+        ("bright", rows > bright, lambda band: (band["above"] < frame_t * band["mean"]
+                                                and band["below"] < frame_t * band["mean"])),
+        ("dark", rows < dark_band, lambda band: (band["above"] > band["mean"] / max(frame_t, 0.01)
+                                                 and band["below"] > band["mean"] / max(frame_t, 0.01))),
+    )
+    for kind, mask, ok_fn in checks:
+        runs = _merge_runs(_runs(np.nan_to_num(mask[y_from:y_to], nan=0.0)), merge_gap)
+        for start, end in runs:
+            start += y_from
+            end += y_from
+            height_px = end - start + 1
+            if height_px < min_band_f * span or height_px > max_band_f * span:
+                continue
+            band_mean = float(np.nanmean(rows[start:end + 1]))
+            if band_mean <= 1:
+                continue
+            above_slice = rows[max(0, start - 18):start]
+            below_slice = rows[end + 20:min(len(rows), end + 90)]
+            above = float(np.nanmean(above_slice)) if above_slice.size else 0.0
+            below = float(np.nanmean(below_slice)) if below_slice.size else 0.0
+            band = {
+                "kind": kind,
                 "y0": int(start),
                 "y1": int(end),
                 "h": int(height_px),
                 "mean": round(band_mean),
                 "above": round(above),
                 "below": round(below),
-                "windows": bool(windows),
+                "windows": bool(ok_fn({"mean": band_mean, "above": above, "below": below})),
             }
-        )
+            bands.append(band)
+
+    bands.sort(key=lambda b: (not b["windows"], -b["h"]))
     return next((b for b in bands if b["windows"]), None), bands
 
 
@@ -188,7 +227,7 @@ def analyze(img: Image.Image, settings: Any | None = None) -> dict[str, Any]:
         win_to = max(int((z["y"] + z["h"]) * height) for z in closed_zones)
     else:
         win_from, win_to = top_y, max(top_y + 2, int(0.6 * floor_y))
-    window_band, bands = _window_band(rows, win_from, win_to, thresholds)
+    window_band, bands = _window_band(rows, win_from, win_to, thresholds, span=floor_y)
 
     result: dict[str, Any] = {
         "state": STATE_UNKNOWN,
@@ -214,38 +253,35 @@ def analyze(img: Image.Image, settings: Any | None = None) -> dict[str, Any]:
         result["reason"] = "кадр почти чёрный — камера или свет недоступны"
         return result
 
-    if result["color"]:
+    if window_band:
+        # окна полотна на месте => полотно опущено => закрыто
+        result["state"] = STATE_CLOSED
+        result["reason"] = (
+            f"окна полотна видны ({'яркая' if window_band['kind'] == 'bright' else 'тёмная'} полоса "
+            f"y {window_band['y0']}–{window_band['y1']}, яркость {window_band['mean']}) — проём закрыт полотном"
+        )
+    elif result["color"]:
         # ДЕНЬ: улица в зоне «открыто» светлая
         if b_open > thresholds.get("street_low_t", 140.0):
             result["state"] = STATE_OPEN
             result["reason"] = (
-                f"зона «открыто» светлая ({b_open:.0f} > {thresholds.get('street_low_t', 140):.0f})"
-                " — видна улица"
+                f"окон не видно; зона «открыто» светлая ({b_open:.0f} > "
+                f"{thresholds.get('street_low_t', 140):.0f}) — видна улица"
             )
         else:
             result["state"] = STATE_CLOSED
-            result["reason"] = (
-                f"зона «открыто» тёмная ({b_open:.0f}) — проём закрыт полотном"
-                + (
-                    f"; окна полотна видны (y {window_band['y0']}–{window_band['y1']})"
-                    if window_band
-                    else ""
-                )
-            )
+            result["reason"] = f"окон не видно, зона «открыто» тёмная ({b_open:.0f}) — проём закрыт полотном"
     else:
-        # НОЧЬ / ИК: правило зеркальное — полотно подсвечено камерой, улица тёмная
+        # НОЧЬ / ИК: улица тёмная, полотно подсвечено камерой
         if b_open < thresholds.get("dark_low_t", 60.0):
             result["state"] = STATE_OPEN
             result["reason"] = (
-                f"ч/б (ИК): зона «открыто» тёмная ({b_open:.0f} < "
+                f"окон не видно; ч/б (ИК): зона «открыто» тёмная ({b_open:.0f} < "
                 f"{thresholds.get('dark_low_t', 60):.0f}) — видна улица"
             )
         else:
             result["state"] = STATE_CLOSED
-            result["reason"] = (
-                f"ч/б (ИК): зона «открыто» светлая ({b_open:.0f}) — проём закрыт полотном"
-                + ("; окна видны тёмными ячейками" if bands else "")
-            )
+            result["reason"] = f"окон не видно; ч/б (ИК): зона «открыто» светлая ({b_open:.0f}) — проём закрыт полотном"
 
     return result
 
