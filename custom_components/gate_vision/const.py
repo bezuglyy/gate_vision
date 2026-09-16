@@ -57,7 +57,9 @@ ZONE_ROLES = ("closed", "open", "ignore")
 ZONE_KINDS = ("open_closed", "on_off")
 KIND_OPEN_CLOSED = "open_closed"
 KIND_ON_OFF = "on_off"
-MAX_SAMPLES = 8  # сколько замеров на состояние хранить (день/ночь/разное освещение)
+MAX_SAMPLES = 12  # сколько замеров на состояние хранить (день/ночь/разное освещение)
+AUTOCAL_COUNT = 10  # сколько замеров собирать при автокалибровке
+AUTOCAL_DELAY = 0.8  # пауза между замерами, с
 ROLE_CLOSED = "closed"  # зона окон полотна: подтверждает «закрыто»
 ROLE_OPEN = "open"  # низ проёма: где появляется улица
 ROLE_IGNORE = "ignore"  # маска помех (тележка, столб, край)
@@ -95,6 +97,7 @@ EVENT_UNKNOWN = "unknown"
 EVENT_CAMERA_LOST = "camera_lost"
 EVENT_CAMERA_BACK = "camera_back"
 EVENT_SCHEDULE = "schedule"
+EVENT_SCHEDULE_UNCONFIRMED = "schedule_unconfirmed"
 
 # --- действия расписаний ---
 ACTION_IMPULSE = "impulse"  # просто импульс
