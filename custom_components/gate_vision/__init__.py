@@ -18,10 +18,12 @@ from homeassistant.core import HomeAssistant
 from .const import DOMAIN
 from .coordinator import GateVisionCoordinator
 from .panel import async_register_panel, async_unregister_panel
+from .schedules import ScheduleRunner
 from .settings import get_settings
 from .views import (
     GateEventsView,
     GateFrameView,
+    GateLearnView,
     GateSettingsView,
     GateStateView,
     GateTestView,
@@ -43,6 +45,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     await _async_register_http(hass)
     await async_register_panel(hass)
 
+    runner = ScheduleRunner(hass, coordinator)
+    runner.start()
+    hass.data[DOMAIN][f"runner:{entry.entry_id}"] = runner
+
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     entry.async_on_unload(entry.add_update_listener(_async_update_listener))
     _LOGGER.info("gate_vision: интеграция запущена (%s)", entry.title)
@@ -59,6 +65,7 @@ async def _async_register_http(hass: HomeAssistant) -> None:
         GateSettingsView(),
         GateTestView(),
         GateEventsView(),
+        GateLearnView(),
     ):
         hass.http.register_view(view)
     hass.data[f"{DOMAIN}_views_registered"] = True
@@ -95,4 +102,10 @@ async def _async_update_listener(hass: HomeAssistant, entry: ConfigEntry) -> Non
     enabled = bool(settings.control.get("enabled"))
     if enabled != coordinator.control_enabled_applied:
         _LOGGER.info("gate_vision: управление %s — перезагружаю запись", "включено" if enabled else "выключено")
+        await hass.config_entries.async_reload(entry.entry_id)
+        return
+    # набор сущностей зон изменился (включили/выключили сущность зоны) — нужна перезагрузка
+    zone_entities = sorted(z["id"] for z in settings.zones if z.get("entity"))
+    if zone_entities != coordinator.zone_entities_applied:
+        _LOGGER.info("gate_vision: сущности зон %s — перезагружаю запись", zone_entities)
         await hass.config_entries.async_reload(entry.entry_id)
