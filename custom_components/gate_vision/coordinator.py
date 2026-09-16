@@ -13,6 +13,7 @@ from typing import Any
 from urllib.parse import quote
 
 import aiohttp
+from homeassistant.components import camera as camera_component
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
@@ -107,7 +108,26 @@ class GateVisionCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         return self._session
 
     async def _fetch(self) -> bytes:
-        """Кадр с повторами (go2rtc иногда отвечает 500/404 на «холодном» старте)."""
+        """Кадр: из сущности camera.* (если выбрана) или по URL с повторами."""
+        if self.settings.camera_entity:
+            return await self._fetch_from_camera(self.settings.camera_entity)
+        return await self._fetch_url()
+
+    async def _fetch_from_camera(self, entity_id: str) -> bytes:
+        """Кадр через компонент camera Home Assistant."""
+        try:
+            image = await camera_component.async_get_image(
+                self.hass, entity_id, timeout=FETCH_TIMEOUT
+            )
+        except Exception as err:  # noqa: BLE001
+            raise UpdateFailed(f"камера {entity_id} недоступна: {err}") from err
+        content = getattr(image, "content", None)
+        if not content or len(content) < 5000:
+            raise UpdateFailed(f"камера {entity_id} вернула пустой кадр")
+        return content
+
+    async def _fetch_url(self) -> bytes:
+        """Кадр по URL с повторами (go2rtc иногда отвечает 500/404 на «холодном» старте)."""
         session = await self._session_get()
         last_error: Exception | None = None
         for attempt in range(1, FETCH_RETRIES + 1):
@@ -252,6 +272,7 @@ class GateVisionCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "left_open": bool(self._open_since and open_for >= left_open_min * 60),
             "zones": zones_info,
             "url": self.url,
+            "camera_entity": self.settings.camera_entity or None,
             "last_event": self._last_event,
         }
 
