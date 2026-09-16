@@ -170,10 +170,12 @@ def _window_band(
             band_mean = float(np.nanmean(rows[start:end + 1]))
             if band_mean <= 1:
                 continue
-            above_slice = rows[max(0, start - 18):start]
-            below_slice = rows[end + 20:min(len(rows), end + 90)]
-            above = float(np.nanmean(above_slice)) if above_slice.size else 0.0
-            below = float(np.nanmean(below_slice)) if below_slice.size else 0.0
+            # фон меряем на отступе от края полосы и медианой: у самой границы идёт
+            # переходное значение (рассвет/закат), из-за которого полоса терялась
+            above_slice = rows[max(0, start - 80):max(0, start - 25)]
+            below_slice = rows[min(len(rows) - 1, end + 25):min(len(rows), end + 100)]
+            above = float(np.nanmedian(above_slice)) if above_slice.size else 0.0
+            below = float(np.nanmedian(below_slice)) if below_slice.size else 0.0
             band = {
                 "kind": kind,
                 "y0": int(start),
@@ -278,6 +280,44 @@ def analyze(img: Image.Image, settings: Any | None = None) -> dict[str, Any]:
 
     if frame_mean < thresholds.get("frame_min_mean", 15.0):
         result["reason"] = "кадр почти чёрный — камера или свет недоступны"
+        return result
+
+    # --- замеры по зонам и классификация по обучению ---
+    zones_detail: list[dict[str, Any]] = []
+    for zone in zones:
+        zx0, zy0, zx1, zy1 = _zone_box(zone, width, height)
+        patch = gray[zy0:zy1, zx0:zx1]
+        z_mean = float(np.nanmean(patch)) if patch.size else 0.0
+        z_state, z_conf = classify_zone(zone.get("samples"), z_mean)
+        zones_detail.append(
+            {
+                "id": zone.get("id"),
+                "name": zone.get("name"),
+                "role": zone.get("role"),
+                "kind": zone.get("kind"),
+                "entity": bool(zone.get("entity")),
+                "mean": round(z_mean, 1),
+                "std": round(float(np.nanstd(patch)), 1) if patch.size else 0.0,
+                "px": int(patch.size),
+                "state": z_state,
+                "conf": z_conf,
+                "samples": {k: len(v or []) for k, v in (zone.get("samples") or {}).items()},
+            }
+        )
+    result["zones_detail"] = zones_detail
+
+    # --- приоритет 1: обученные зоны (если пользователь обучил состояния) ---
+    learned = [
+        z for z in result.get("zones_detail", [])
+        if z.get("state") in ("open", "closed") and (z.get("conf") or 0) > 0.15
+    ]
+    if learned:
+        best = max(learned, key=lambda z: (z.get("conf") or 0))
+        result["state"] = best["state"]
+        result["reason"] = (
+            f"обученная зона «{best.get('name')}»: замер {best.get('mean')} → {best['state']} "
+            f"(уверенность {best.get('conf')})"
+        )
         return result
 
     if window_band:
