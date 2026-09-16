@@ -159,7 +159,7 @@ class GateVisionCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 lambda: Image.open(io.BytesIO(raw)).convert("RGB")
             )
             result = await self.hass.async_add_executor_job(analyze, img, self.settings)
-            zones_info = await self.hass.async_add_executor_job(
+            zones_info = result.get("zones_detail") or await self.hass.async_add_executor_job(
                 zone_measurements, img, self.settings
             )
         except Exception as err:  # noqa: BLE001
@@ -181,7 +181,11 @@ class GateVisionCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         if self._prev_rows is not None and getattr(rows, "shape", None) == getattr(
             self._prev_rows, "shape", None
         ):
-            diff = float(abs(rows - self._prev_rows).mean())
+            # сравниваем ФОРМУ профиля (без общего уровня яркости), иначе смена освещения
+            # на рассвете/закате выглядит как движение полотна
+            cur_norm = rows - rows.mean()
+            prev_norm = self._prev_rows - self._prev_rows.mean()
+            diff = float(abs(cur_norm - prev_norm).mean())
             moving = diff >= self.settings.thresholds.get("move_diff", 6.0)
         self._prev_rows = rows
         if moving:
