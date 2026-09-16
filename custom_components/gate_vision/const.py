@@ -8,6 +8,7 @@ MANUFACTURER = "techlan.su"
 VERSION = "1.0.0"
 
 # --- ключи настроек (config entry data/options) ---
+CONF_CAMERA_ENTITY = "camera_entity"
 CONF_SNAPSHOT_URL = "snapshot_url"
 CONF_GO2RTC_BASE = "go2rtc_base"
 CONF_SCAN_INTERVAL = "scan_interval"
