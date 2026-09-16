@@ -8,7 +8,8 @@
           "name": "Name",
           "snapshot_url": "Frame: RTSP / stream name / URL",
           "go2rtc_base": "go2rtc address",
-          "scan_interval": "Poll interval, s"
+          "scan_interval": "Poll interval, s",
+          "camera_entity": "Home Assistant camera"
         }
       }
     },
@@ -30,7 +31,8 @@
           "scan_interval": "Poll interval, s",
           "learn_mode": "Learn mode (record only)",
           "left_open_min": "Notify when open longer than, min",
-          "skip_check": "Save without camera check"
+          "skip_check": "Save without camera check",
+          "camera_entity": "Home Assistant camera"
         }
       }
     }
