@@ -1,13 +1,13 @@
 # Gate Vision
 ![Release](https://img.shields.io/github/v/release/bezuglyy/gate_vision?label=Release&style=flat-square) ![HACS](https://img.shields.io/badge/HACS-Custom%20Repository-purple?style=flat-square) ![License](https://img.shields.io/github/license/bezuglyy/gate_vision?style=flat-square) ![HA](https://img.shields.io/badge/HA-2025.1%2B-2ea44f?style=flat-square)
-Кастомная интеграция для [Home Assistant](https://www.home-assistant.io) · версия **1.0.0**.
+Кастомная интеграция для [Home Assistant](https://www.home-assistant.io) · версия **1.1.0**.
 
 ![icon](custom_components/gate_vision/brand/icon.png)
 
 | | |
 |---|---|
 | Домен | `gate_vision` |
-| Версия | 1.0.0 |
+| Версия | 1.1.0 |
 | Тип | custom integration |
 | Тип опроса | `local_polling` |
 | Зависимости | нет (numpy и Pillow уже есть в Home Assistant) |
@@ -24,6 +24,10 @@
   уходит в ИК — правило зеркальное, а окна полотна читаются как тёмные ячейки на подсвеченном полотне
 - ✅ **Зоны детекции**: где искать признак «открыто» (низ проёма), где «закрыто» (окна полотна) и
   что игнорировать (тележка, столб, край кадра)
+- ✅ **Источник кадра — выбором из списка**: камера Home Assistant (`camera.*`, рекомендуется) или
+  RTSP-адрес / имя потока go2rtc / готовый URL
+- ✅ **Получатели выбираются из списка**, а не вписываются руками: службы `notify.*`, сущности
+  `tts.*`, `media_player.*`, `script.*` / `automation.*` / `scene.*`, реле `switch.*`
 - ✅ **Веб-панель «Ворота»** в боковом меню: живой кадр, рисование зон мышью, пороги с моментальным
   применением, журнал событий
 - ✅ **Реагирования на события**: открылись, закрылись, оставлены открытыми, движение полотна,
@@ -44,7 +48,7 @@
 > HACS: добавьте `https://github.com/bezuglyy/gate_vision` как Custom repository (категория Integration).
 
 ### Настройка камеры
-В мастере можно указать RTSP-адрес, имя потока go2rtc или готовый URL снапшота:
+Источник кадра выбирается в мастере: **камера Home Assistant** (`camera.*`) или адрес напрямую:
 
 ```
 rtsp://admin:PASS@192.168.4.200:9784/cameras/6/streaming/main   # RTSP напрямую
@@ -119,7 +123,7 @@ reason: "ч/б (ИК): зона «открыто» тёмная (32 < 60) — в
 
 # Gate Vision (English)
 
-Custom [Home Assistant](https://www.home-assistant.io) integration · version **1.0.0**.
+Custom [Home Assistant](https://www.home-assistant.io) integration · version **1.1.0**.
 
 Detects the state of a **sectional / overhead garage gate from a camera** — no magnets, reed
 switches or markers. The integration reads a frame from a camera that sees the gate leaf and
@@ -132,6 +136,8 @@ reports **CLOSED / OPEN**, with a web panel for detection zones, thresholds, rea
 - **Detection zones**: where to look for "open" (bottom of the opening), "closed" (leaf windows)
   and what to ignore (cart, pole, frame edge)
 - **Web panel** in the sidebar: live frame, draw zones with the mouse, thresholds applied instantly, event log
+- **Frame source and recipients are picked from lists**: HA camera entity (`camera.*`) or a direct URL;
+  `notify.*` services, `tts.*`, `media_player.*`, `script.*`/`automation.*`/`scene.*`, relay `switch.*`
 - **Reactions**: opened, closed, left open, leaf moving, state unknown, camera lost/back.
   Channels: push (`notify.*`), HA notification, TTS, script/service, MQTT, webhook + repeat and quiet hours
 - Bus event `gate_vision_state_changed` for custom automations
