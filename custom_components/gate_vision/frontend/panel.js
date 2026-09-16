@@ -50,6 +50,8 @@ class GateVisionPanel extends HTMLElement {
     this._selectedZone = null;
     this._drag = null;
     this._newRole = "open";
+    this._dirty = false;
+    this._zoneSaveTimer = null;
     this._log = [];
   }
 
@@ -151,6 +153,7 @@ class GateVisionPanel extends HTMLElement {
         <div class="gv-meta" id="gvMeta"></div>
         <div style="flex:1 1 auto"></div>
         <button class="gv-btn secondary" id="gvBack" title="Вернуться в меню Home Assistant">◀ В меню</button>
+        <span class="gv-meta" id="gvDirty" style="display:none;color:#b45309">● не сохранено</span>
         <label class="gv-meta"><input type="checkbox" id="gvLive" checked> живой кадр</label>
         <button class="gv-btn secondary" id="gvRefresh">Обновить</button>
         <button class="gv-btn" id="gvTest">Проверить сейчас</button>
@@ -238,7 +241,8 @@ class GateVisionPanel extends HTMLElement {
       const q = fresh ? "?fresh=1" : "";
       const data = await this._hass.callApi("GET", `gate_vision/state${q}`);
       this._state = data.analysis || {};
-      this._settings = data.settings || this._settings;
+      if (!this._dirty) this._settings = data.settings || this._settings;
+      else if (data.settings) this._serverSettings = data.settings;
       this._log = data.event_log || this._log;
       await this._loadFrame(fresh);
       this._renderHead();
@@ -285,6 +289,7 @@ class GateVisionPanel extends HTMLElement {
   async _save(patch) {
     try {
       const res = await this._hass.callApi("POST", "gate_vision/settings?refresh=1", patch);
+      this._dirty = false;
       this._settings = res.settings || this._settings;
       this._toast("Сохранено");
       await this._load(false, true);
@@ -352,6 +357,8 @@ class GateVisionPanel extends HTMLElement {
     if (s.camera_ok === false) parts.push("камера недоступна");
     if (this._settings?.learn_mode) parts.push("режим обучения");
     this._root.querySelector("#gvMeta").textContent = parts.join(" · ");
+    const dirtyEl = this._root.querySelector("#gvDirty");
+    if (dirtyEl) dirtyEl.style.display = this._dirty ? "" : "none";
     this._root.querySelector("#gvMeta").title = s.reason || "";
   }
 
@@ -410,6 +417,8 @@ class GateVisionPanel extends HTMLElement {
       const role = bar.querySelector("#gvBulkRole").value;
       if (!role || !sel.size) return;
       zones.forEach((z) => { if (sel.has(z.id)) z.role = role; });
+      this._dirty = true;
+      this._scheduleZoneSave();
       this._renderZoneList(); this._draw();
     };
     bar.querySelector("#gvBulkDel").onclick = () => {
@@ -417,6 +426,8 @@ class GateVisionPanel extends HTMLElement {
       this._settings.zones = zones.filter((z) => !sel.has(z.id));
       sel.clear();
       this._selectedZone = null;
+      this._dirty = true;
+      this._scheduleZoneSave();
       this._renderZoneList(); this._draw();
     };
     bar.querySelector("#gvClearSel").onclick = () => { sel.clear(); this._renderZoneList(); this._draw(); };
@@ -445,12 +456,24 @@ class GateVisionPanel extends HTMLElement {
         this._selectedZone = z.id;
         this._renderZoneList(); this._draw();
       };
-      row.querySelector(".gv-zname").onchange = (e) => { z.name = e.target.value; };
-      row.querySelector("select").onchange = (e) => { z.role = e.target.value; this._renderZoneList(); this._draw(); };
+      row.querySelector(".gv-zname").onchange = (e) => {
+        z.name = e.target.value;
+        this._dirty = true;
+        this._scheduleZoneSave();
+      };
+      row.querySelector("select").onchange = (e) => {
+        z.role = e.target.value;
+        this._dirty = true;
+        this._scheduleZoneSave();
+        this._renderZoneList();
+        this._draw();
+      };
       row.querySelector("button").onclick = () => {
         this._settings.zones = zones.filter((x) => x.id !== z.id);
         sel.delete(z.id);
         this._selectedZone = null;
+        this._dirty = true;
+        this._scheduleZoneSave();
         this._renderZoneList(); this._draw();
       };
       host.appendChild(row);
@@ -479,6 +502,8 @@ class GateVisionPanel extends HTMLElement {
           else if (key === "y") zone.y = Math.min(1 - zone.h, v);
           else if (key === "w") zone.w = Math.max(0.005, Math.min(1 - zone.x, v));
           else zone.h = Math.max(0.005, Math.min(1 - zone.y, v));
+          this._dirty = true;
+          this._scheduleZoneSave();
           this._renderZoneList(); this._draw();
         };
       });
@@ -846,6 +871,7 @@ class GateVisionPanel extends HTMLElement {
       this._settings.zones = [...(this._settings.zones || []), zone];
       this._selectedZone = id;
       this._drag = { zone, resize: true, start: p, orig: { ...zone } };
+      this._dirty = true;
     }
     this._renderZoneList();
     this._draw();
@@ -884,8 +910,20 @@ class GateVisionPanel extends HTMLElement {
     if (this._drag) {
       const { zone } = this._drag;
       ["x", "y", "w", "h"].forEach((k) => { zone[k] = Math.round(zone[k] * 10000) / 10000; });
+      this._dirty = true;
+      this._scheduleZoneSave();
+      this._renderZoneList();
     }
     this._drag = null;
+  }
+
+  /** Автосохранение зон через 0.7 с после правки (чтобы не дёргать HA на каждый пиксель). */
+  _scheduleZoneSave() {
+    if (this._zoneSaveTimer) clearTimeout(this._zoneSaveTimer);
+    this._zoneSaveTimer = setTimeout(() => {
+      const zones = (this._settings?.zones || []).map((z) => ({ ...z }));
+      this._save({ zones });
+    }, 700);
   }
 
   _toast(message) {
