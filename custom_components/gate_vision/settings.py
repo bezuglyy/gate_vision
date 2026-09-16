@@ -59,8 +59,18 @@ def normalize_zone(zone: dict[str, Any], index: int) -> dict[str, Any]:
     if y + h > 1.0:
         h = 1.0 - y
     samples_raw = zone.get("samples") if isinstance(zone.get("samples"), dict) else {}
+
+    def _sample(value):
+        """Замер: старый формат (число) или новый ({mean, band})."""
+        if _is_number(value):
+            return {"mean": float(value), "band": None}
+        if isinstance(value, dict) and _is_number(value.get("mean")):
+            band = value.get("band")
+            return {"mean": float(value["mean"]), "band": None if band is None else bool(band)}
+        return None
+
     samples = {
-        state: [float(v) for v in (samples_raw.get(state) or []) if _is_number(v)][-MAX_SAMPLES:]
+        state: [s for s in (_sample(v) for v in (samples_raw.get(state) or [])) if s][-MAX_SAMPLES:]
         for state in ("open", "closed")
     }
     kind = str(zone.get("kind") or KIND_OPEN_CLOSED)
