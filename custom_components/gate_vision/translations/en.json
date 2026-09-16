@@ -2,7 +2,7 @@
   "config": {
     "step": {
       "user": {
-        "title": "Gate (gate-vision)",
+        "title": "Detection",
         "description": "Choose the camera that looks at the gate. You may paste an RTSP URL, a go2rtc stream name or a ready snapshot URL.",
         "data": {
           "name": "Name",
@@ -23,7 +23,7 @@
   "options": {
     "step": {
       "init": {
-        "title": "Gate settings",
+        "title": "Detection settings",
         "data": {
           "name": "Name",
           "snapshot_url": "Frame: RTSP / stream name / URL",
