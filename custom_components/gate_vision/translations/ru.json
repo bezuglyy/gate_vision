@@ -8,7 +8,8 @@
           "name": "Название",
           "snapshot_url": "Кадр: RTSP / имя потока / URL",
           "go2rtc_base": "Адрес go2rtc",
-          "scan_interval": "Интервал опроса, с"
+          "scan_interval": "Интервал опроса, с",
+          "camera_entity": "Камера Home Assistant"
         }
       }
     },
@@ -30,7 +31,8 @@
           "scan_interval": "Интервал опроса, с",
           "learn_mode": "Режим обучения (только запись)",
           "left_open_min": "Сообщать, что открыты дольше, мин",
-          "skip_check": "Сохранить без проверки камеры"
+          "skip_check": "Сохранить без проверки камеры",
+          "camera_entity": "Камера Home Assistant"
         }
       }
     }
