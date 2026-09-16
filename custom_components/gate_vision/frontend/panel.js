@@ -278,6 +278,44 @@ class GateVisionPanel extends HTMLElement {
     await this._save({ zones: [z1, z2] });
   }
 
+
+  /* ------------------------------------------------------------------ списки для выбора */
+  _entities(domains) {
+    const out = [];
+    const states = (this._hass && this._hass.states) || {};
+    Object.keys(states).forEach((id) => {
+      const dom = id.split(".")[0];
+      if (domains.includes(dom)) {
+        const name = states[id].attributes?.friendly_name || id;
+        out.push({ value: id, label: `${name} (${id})` });
+      }
+    });
+    out.sort((a, b) => a.label.localeCompare(b.label, "ru"));
+    return out;
+  }
+
+  _notifyServices() {
+    const out = [];
+    const services = (this._hass && this._hass.services) || {};
+    Object.keys(services.notify || {}).forEach((name) => {
+      if (["send_message", "send_file", "persistent_notification", "notify"].includes(name)) return;
+      out.push({ value: `notify.${name}`, label: `notify.${name}` });
+    });
+    out.sort((a, b) => a.label.localeCompare(b.label));
+    return out;
+  }
+
+  _datalist(id, items) {
+    return `<datalist id="${id}">` +
+      items.map((i) => `<option value="${i.value}">${i.label}</option>`).join("") +
+      `</datalist>`;
+  }
+
+  _pick(id, items, value, placeholder) {
+    return `${this._datalist(id, items)}
+      <input type="text" list="${id}" data-f="__FIELD__" value="${value || ""}" placeholder="${placeholder || "выбрать из списка"}">`;
+  }
+
   /* ------------------------------------------------------------------ отрисовка */
   _renderHead() {
     const s = this._state || {};
@@ -398,10 +436,18 @@ class GateVisionPanel extends HTMLElement {
         <h4><label><input type="checkbox" data-f="enabled" ${cfg.enabled ? "checked" : ""}> ${title}</label></h4>
         <div class="gv-ch">${CHANNELS.map(([ch, chTitle]) =>
           `<label><input type="checkbox" data-ch="${ch}" ${(cfg.channels || []).includes(ch) ? "checked" : ""}> ${chTitle}</label>`).join("")}</div>
-        <div class="gv-row"><label>notify-служба</label><input type="text" data-f="notify_service" value="${cfg.notify_service || ""}" placeholder="notify.mobile_app_iphone_administrator"></div>
-        <div class="gv-row"><label>TTS-сущность</label><input type="text" data-f="tts_entity" value="${cfg.tts_entity || ""}" placeholder="tts.edge_tts"></div>
-        <div class="gv-row"><label>media_player для TTS</label><input type="text" data-f="tts_media_player" value="${cfg.tts_media_player || ""}" placeholder="media_player.baza_speaker"></div>
-        <div class="gv-row"><label>Скрипт/служба</label><input type="text" data-f="script_entity" value="${cfg.script_entity || ""}" placeholder="script.gate_opened"></div>
+        <div class="gv-row"><label>Кому (push)</label>
+          <input type="text" list="gv-notify-${key}" data-f="notify_service" value="${cfg.notify_service || ""}" placeholder="выбрать службу notify">
+          ${this._datalist(`gv-notify-${key}`, this._notifyServices())}</div>
+        <div class="gv-row"><label>Озвучка (TTS)</label>
+          <input type="text" list="gv-tts-${key}" data-f="tts_entity" value="${cfg.tts_entity || ""}" placeholder="выбрать tts.*">
+          ${this._datalist(`gv-tts-${key}`, this._entities(["tts"]))}</div>
+        <div class="gv-row"><label>Куда говорить</label>
+          <input type="text" list="gv-mp-${key}" data-f="tts_media_player" value="${cfg.tts_media_player || ""}" placeholder="выбрать media_player.*">
+          ${this._datalist(`gv-mp-${key}`, this._entities(["media_player"]))}</div>
+        <div class="gv-row"><label>Скрипт / автоматизация</label>
+          <input type="text" list="gv-scr-${key}" data-f="script_entity" value="${cfg.script_entity || ""}" placeholder="выбрать script.* / automation.*">
+          ${this._datalist(`gv-scr-${key}`, this._entities(["script", "automation", "scene"]))}</div>
         <div class="gv-row"><label>MQTT-топик</label><input type="text" data-f="mqtt_topic" value="${cfg.mqtt_topic || ""}" placeholder="gate_vision/event"></div>
         <div class="gv-row"><label>Webhook URL</label><input type="text" data-f="webhook_url" value="${cfg.webhook_url || ""}" placeholder="http://..."></div>
         <div class="gv-row"><label>Текст сообщения</label><input type="text" data-f="message" value="${cfg.message || ""}" placeholder="(по умолчанию)"></div>
@@ -433,7 +479,9 @@ class GateVisionPanel extends HTMLElement {
           <option value="switch_impulse" ${c.mode !== "mqtt_impulse" ? "selected" : ""}>Сущность реле (switch.*)</option>
           <option value="mqtt_impulse" ${c.mode === "mqtt_impulse" ? "selected" : ""}>MQTT-топик реле</option>
         </select></div>
-      <div class="gv-row"><label>Сущность реле</label><input type="text" data-f="switch_entity" value="${c.switch_entity || ""}" placeholder="switch.dingtian_relay8777832_switch26"></div>
+      <div class="gv-row"><label>Реле ворот</label>
+        <input type="text" list="gv-relay" data-f="switch_entity" value="${c.switch_entity || ""}" placeholder="выбрать switch.*">
+        ${this._datalist("gv-relay", this._entities(["switch"]))}</div>
       <div class="gv-row"><label>MQTT-топик</label><input type="text" data-f="mqtt_topic" value="${c.mqtt_topic || ""}" placeholder="dingtian/relay8777832/in/r26"></div>
       <div class="gv-row"><label>Длительность импульса, мс</label><input type="number" data-f="impulse_ms" value="${c.impulse_ms || 800}"></div>
       <div class="gv-row"><label>Ожидание подтверждения, с</label><input type="number" data-f="confirm_timeout" value="${c.confirm_timeout || 45}"></div>
@@ -457,8 +505,11 @@ class GateVisionPanel extends HTMLElement {
     const a = this._state || {};
     const wrap = document.createElement("div");
     wrap.innerHTML = `
-      <div class="gv-row"><label>Кадр (RTSP, имя потока или URL)</label>
-        <input type="text" data-f="snapshot_url" value="${s.snapshot_url || ""}"></div>
+      <div class="gv-row"><label>Камера в Home Assistant</label>
+        <input type="text" list="gv-cam" data-f="camera_entity" value="${s.camera_entity || ""}" placeholder="выбрать camera.* (рекомендуется)">
+        ${this._datalist("gv-cam", this._entities(["camera"]))}</div>
+      <div class="gv-row"><label>…или кадр напрямую (RTSP / имя потока / URL)</label>
+        <input type="text" data-f="snapshot_url" value="${s.snapshot_url || ""}" placeholder="rtsp://... или имя потока go2rtc"></div>
       <div class="gv-row"><label>go2rtc</label>
         <input type="text" data-f="go2rtc_base" value="${s.go2rtc_base || ""}"></div>
       <div class="gv-row"><label>Интервал опроса, с</label>
