@@ -12,8 +12,10 @@ from homeassistant.core import HomeAssistant
 
 from .const import (
     CONF_CONTROL,
+    MAX_SAMPLES,
     CONF_LEARN_MODE,
     CONF_REACTIONS,
+    CONF_SCHEDULES,
     CONF_THRESHOLDS,
     CONF_ZONES,
     DOMAIN,
@@ -22,6 +24,7 @@ from .const import (
     URL_SETTINGS,
     URL_STATE,
     URL_TEST,
+    URL_LEARN,
 )
 from .coordinator import GateVisionCoordinator
 from .settings import Settings
@@ -134,9 +137,11 @@ class GateSettingsView(HomeAssistantView):
             CONF_THRESHOLDS,
             CONF_REACTIONS,
             CONF_CONTROL,
+            CONF_SCHEDULES,
             CONF_LEARN_MODE,
             "left_open_min",
             "scan_interval",
+            "camera_entity",
             "snapshot_url",
             "go2rtc_base",
         ):
@@ -194,3 +199,57 @@ class GateEventsView(HomeAssistantView):
             return web.json_response({"error": "не настроено"}, status=404)
         limit = int(request.query.get("limit", 50))
         return web.json_response({"events": list(coordinator.event_log)[-limit:]})
+
+
+class GateLearnView(HomeAssistantView):
+    """Обучение состояний зоны: запомнить текущий замер как «открыто» или «закрыто»."""
+
+    url = URL_LEARN
+    name = f"{DOMAIN}:learn"
+    requires_auth = True
+
+    async def post(self, request: web.Request) -> web.Response:
+        hass: HomeAssistant = request.app["hass"]
+        settings = _settings(hass)
+        coordinator = _coordinator(hass)
+        if settings is None or coordinator is None:
+            return web.json_response({"error": "не настроено"}, status=404)
+        try:
+            body: dict[str, Any] = await request.json()
+        except (json.JSONDecodeError, ValueError):
+            return web.json_response({"error": "некорректный JSON"}, status=400)
+
+        zone_id = str(body.get("zone_id") or "")
+        action = str(body.get("action") or "learn")
+        zone = next((z for z in settings.zones if z["id"] == zone_id), None)
+        if zone is None:
+            return web.json_response({"error": f"зона {zone_id} не найдена"}, status=404)
+
+        # свежий замер зоны
+        try:
+            await coordinator.async_request_refresh()
+        except Exception as err:  # noqa: BLE001
+            return web.json_response({"error": f"кадр недоступен: {err}"}, status=502)
+        measured = next((z for z in (coordinator.data or {}).get("zones", []) if z.get("id") == zone_id), None)
+        if measured is None:
+            return web.json_response({"error": "нет замера зоны"}, status=502)
+
+        zones = [dict(z) for z in settings.zones]
+        target = next(z for z in zones if z["id"] == zone_id)
+        samples = {k: list(v or []) for k, v in (target.get("samples") or {}).items()}
+        samples.setdefault("open", [])
+        samples.setdefault("closed", [])
+
+        if action == "reset":
+            samples = {"open": [], "closed": []}
+            message = "обучение сброшено"
+        else:
+            state = str(body.get("state") or "")
+            if state not in ("open", "closed"):
+                return web.json_response({"error": "state должен быть open или closed"}, status=400)
+            samples[state] = (samples[state] + [float(measured["mean"])])[-MAX_SAMPLES:]
+            message = f"запомнено «{state}» = {measured['mean']} (всего {len(samples[state])})"
+
+        target["samples"] = samples
+        await settings.async_save({"zones": zones})
+        return web.json_response({"ok": True, "message": message, "zones": settings.as_dict()["zones"]})
