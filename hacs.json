@@ -1,6 +1,7 @@
 {
-  "name": "Gate Vision",
+  "name": "Ворота (gate-vision)",
   "content_in_root": false,
   "render_readme": true,
-  "homeassistant": "2025.1.0"
+  "homeassistant": "2025.1.0",
+  "zip_release": false
 }
