@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 DOMAIN = "gate_vision"
-NAME = "Ворота (gate-vision)"
+NAME = "Обнаружение"
 MANUFACTURER = "techlan.su"
 VERSION = "1.0.0"
 
@@ -16,6 +16,7 @@ CONF_ZONES = "zones"
 CONF_THRESHOLDS = "thresholds"
 CONF_REACTIONS = "reactions"
 CONF_CONTROL = "control"
+CONF_SCHEDULES = "schedules"
 CONF_LEARN_MODE = "learn_mode"
 
 DEFAULT_GO2RTC_BASE = "http://127.0.0.1:1984"
@@ -47,7 +48,16 @@ DEFAULT_THRESHOLDS: dict[str, float] = {
 }
 
 # --- зоны ---
+# Роли: closed (признак «закрыто»), open (признак «открыто»), ignore (исключение).
+# Дополнительно у зоны есть обучение состояний и параметры сущности:
+#   samples: {"open": [...], "closed": [...]} — замеры яркости зоны при обучении
+#   entity:  создавать ли отдельную сущность состояния этой зоны
+#   kind:    "open_closed" (Открыто/Закрыто) | "on_off" (Включено/Выключено)
 ZONE_ROLES = ("closed", "open", "ignore")
+ZONE_KINDS = ("open_closed", "on_off")
+KIND_OPEN_CLOSED = "open_closed"
+KIND_ON_OFF = "on_off"
+MAX_SAMPLES = 8  # сколько замеров на состояние хранить (день/ночь/разное освещение)
 ROLE_CLOSED = "closed"  # зона окон полотна: подтверждает «закрыто»
 ROLE_OPEN = "open"  # низ проёма: где появляется улица
 ROLE_IGNORE = "ignore"  # маска помех (тележка, столб, край)
@@ -57,27 +67,19 @@ STATE_CLOSED = "closed"
 STATE_OPEN = "open"
 STATE_UNKNOWN = "unknown"
 
-# --- зоны по умолчанию (совпадают с проверенной геометрией 16.09.2026) ---
+# --- зоны по умолчанию: одна зона — окна полотна ---
 DEFAULT_ZONES: list[dict] = [
     {
         "id": "z1",
-        "name": "Окна полотна (закрыто)",
+        "name": "Окна полотна",
         "role": ROLE_CLOSED,
         "x": 0.57,
         "y": 0.10,
         "w": 0.25,
         "h": 0.25,
     },
-    {
-        "id": "z2",
-        "name": "Низ проёма (открыто)",
-        "role": ROLE_OPEN,
-        "x": 0.57,
-        "y": 0.40,
-        "w": 0.25,
-        "h": 0.15,
-    },
 ]
+
 
 UNKNOWN_GRACE = 6  # сколько циклов «неизвестно» держим последнее состояние
 FETCH_RETRIES = 3
@@ -92,6 +94,19 @@ EVENT_MOVING = "moving"
 EVENT_UNKNOWN = "unknown"
 EVENT_CAMERA_LOST = "camera_lost"
 EVENT_CAMERA_BACK = "camera_back"
+EVENT_SCHEDULE = "schedule"
+
+# --- действия расписаний ---
+ACTION_IMPULSE = "impulse"  # просто импульс
+ACTION_OPEN = "open"  # импульс, только если закрыто
+ACTION_CLOSE = "close"  # импульс, только если открыто
+ACTION_STOP = "stop"  # импульс, только если движется
+ACTIONS = (ACTION_IMPULSE, ACTION_OPEN, ACTION_CLOSE, ACTION_STOP)
+
+# дни недели: 0 = понедельник
+DAYS_ALL = [0, 1, 2, 3, 4, 5, 6]
+DAYS_WORK = [0, 1, 2, 3, 4]
+DAYS_WEEKEND = [5, 6]
 
 EVENTS: tuple[str, ...] = (
     EVENT_OPENED,
@@ -145,6 +160,7 @@ DEFAULT_LEFT_OPEN_MIN = 15  # через сколько минут открыт�
 # --- управление (этап 4, по умолчанию выключено) ---
 DEFAULT_CONTROL: dict[str, object] = {
     "enabled": False,  # управление выключено, пока не настроено
+    "relay_type": "impulse",  # impulse — реле само даёт импульс | constant — держим сами
     "mode": "switch_impulse",  # switch_impulse | mqtt_impulse
     "switch_entity": "",  # например switch.dingtian_relay8777832_switch26
     "mqtt_topic": "",  # например dingtian/relay8777832/in/r26
@@ -159,6 +175,7 @@ URL_FRAME = f"/api/{DOMAIN}/frame"
 URL_STATE = f"/api/{DOMAIN}/state"
 URL_SETTINGS = f"/api/{DOMAIN}/settings"
 URL_TEST = f"/api/{DOMAIN}/test"
+URL_LEARN = f"/api/{DOMAIN}/learn"
 URL_EVENTS = f"/api/{DOMAIN}/events"
 PANEL_URL = "gate-vision"
 PANEL_TITLE = "Ворота"
