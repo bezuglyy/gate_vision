@@ -1,0 +1,79 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Gate (gate-vision)",
+        "description": "Choose the camera that looks at the gate. You may paste an RTSP URL, a go2rtc stream name or a ready snapshot URL.",
+        "data": {
+          "name": "Name",
+          "snapshot_url": "Frame: RTSP / stream name / URL",
+          "go2rtc_base": "go2rtc address",
+          "scan_interval": "Poll interval, s"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Cannot fetch a frame from the camera. Check the address, credentials and go2rtc availability."
+    },
+    "abort": {
+      "already_configured": "This camera is already configured."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Gate settings",
+        "data": {
+          "name": "Name",
+          "snapshot_url": "Frame: RTSP / stream name / URL",
+          "go2rtc_base": "go2rtc address",
+          "scan_interval": "Poll interval, s",
+          "learn_mode": "Learn mode (record only)",
+          "left_open_min": "Notify when open longer than, min",
+          "skip_check": "Save without camera check"
+        }
+      }
+    }
+  },
+  "entity": {
+    "binary_sensor": {
+      "gate": {
+        "name": "Gate"
+      },
+      "moving": {
+        "name": "Gate leaf moving"
+      },
+      "camera": {
+        "name": "Camera"
+      }
+    },
+    "sensor": {
+      "frame_mode": {
+        "name": "Frame mode"
+      },
+      "zone_open_brightness": {
+        "name": "Zone 'open' brightness"
+      },
+      "zone_closed_brightness": {
+        "name": "Zone 'closed' brightness"
+      },
+      "open_duration": {
+        "name": "Open, seconds"
+      },
+      "last_change": {
+        "name": "Last change"
+      },
+      "last_event": {
+        "name": "Last event"
+      },
+      "detection": {
+        "name": "Detector decision"
+      }
+    },
+    "cover": {
+      "gate": {
+        "name": "Gate"
+      }
+    }
+  }
+}
