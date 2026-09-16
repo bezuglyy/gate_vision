@@ -1,13 +1,13 @@
 # Gate Vision
 ![Release](https://img.shields.io/github/v/release/bezuglyy/gate_vision?label=Release&style=flat-square) ![HACS](https://img.shields.io/badge/HACS-Custom%20Repository-purple?style=flat-square) ![License](https://img.shields.io/github/license/bezuglyy/gate_vision?style=flat-square) ![HA](https://img.shields.io/badge/HA-2025.1%2B-2ea44f?style=flat-square)
-Кастомная интеграция для [Home Assistant](https://www.home-assistant.io) · версия **1.1.0**.
+Кастомная интеграция для [Home Assistant](https://www.home-assistant.io) · версия **1.2.0**.
 
 ![icon](custom_components/gate_vision/brand/icon.png)
 
 | | |
 |---|---|
 | Домен | `gate_vision` |
-| Версия | 1.1.0 |
+| Версия | 1.2.0 |
 | Тип | custom integration |
 | Тип опроса | `local_polling` |
 | Зависимости | нет (numpy и Pillow уже есть в Home Assistant) |
@@ -22,6 +22,10 @@
   автоматизаций, дашборда и голосового ассистента
 - ✅ **Работает днём и ночью**: днём «открыто» видно по светлой улице под полотном; ночью камера
   уходит в ИК — правило зеркальное, а окна полотна читаются как тёмные ячейки на подсвеченном полотне
+- ✅ **Окна полотна — главный признак «закрыто»** (яркая полоса днём, тёмная ночью), поэтому состояние
+  не «плывёт» при смене экспозиции на рассвете/закате
+- ✅ **Точные размеры зон**: у выбранной зоны можно задать X/Y/ширину/высоту в процентах,
+  двигать стрелками на кадре, а также выбирать одну или несколько зон для массовых действий
 - ✅ **Зоны детекции**: где искать признак «открыто» (низ проёма), где «закрыто» (окна полотна) и
   что игнорировать (тележка, столб, край кадра)
 - ✅ **Источник кадра — выбором из списка**: камера Home Assistant (`camera.*`, рекомендуется) или
@@ -66,7 +70,10 @@ http://127.0.0.1:1984/api/frame.jpeg?src=...                    # готовый
 - ⬜ **Исключение** — помехи, исключаются из расчёта
 
 ЛКМ по пустому месту — нарисовать зону, тянуть — сдвинуть, за уголок — изменить размер.
-Кнопка «Зоны по умолчанию» возвращает проверенную геометрию.
+Стрелки на кадре двигают выбранную зону (с Shift — мелким шагом).
+У выбранной зоны есть блок **точных размеров** (X, Y, ширина, высота в %).
+Галочками можно выбрать **одну или несколько зон** и применить к ним роль или удалить их разом.
+Кнопка «Зоны по умолчанию» возвращает проверенную геометрию, «◀ В меню» — возврат в меню Home Assistant.
 
 ### Сущности
 | Сущность | Тип | Что показывает |
@@ -123,7 +130,7 @@ reason: "ч/б (ИК): зона «открыто» тёмная (32 < 60) — в
 
 # Gate Vision (English)
 
-Custom [Home Assistant](https://www.home-assistant.io) integration · version **1.1.0**.
+Custom [Home Assistant](https://www.home-assistant.io) integration · version **1.2.0**.
 
 Detects the state of a **sectional / overhead garage gate from a camera** — no magnets, reed
 switches or markers. The integration reads a frame from a camera that sees the gate leaf and
