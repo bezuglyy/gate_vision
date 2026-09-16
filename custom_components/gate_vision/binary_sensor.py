@@ -16,6 +16,7 @@ from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import (
     DOMAIN,
+    KIND_OPEN_CLOSED,
     MANUFACTURER,
     STATE_CLOSED,
     STATE_OPEN,
@@ -31,13 +32,16 @@ async def async_setup_entry(
     async_add_entities: AddEntitiesCallback,
 ) -> None:
     coordinator: GateVisionCoordinator = hass.data[DOMAIN][entry.entry_id]
-    async_add_entities(
-        [
-            GateBinarySensor(coordinator, entry),
-            GateMovingBinarySensor(coordinator, entry),
-            GateCameraBinarySensor(coordinator, entry),
-        ]
-    )
+    entities: list[BinarySensorEntity] = [
+        GateBinarySensor(coordinator, entry),
+        GateMovingBinarySensor(coordinator, entry),
+        GateCameraBinarySensor(coordinator, entry),
+    ]
+    # отдельные сущности для зон, у которых включена сущность состояния
+    for zone in coordinator.settings.zones:
+        if zone.get("entity"):
+            entities.append(ZoneStateBinarySensor(coordinator, entry, zone["id"]))
+    async_add_entities(entities)
 
 
 class GateVisionBase(CoordinatorEntity[GateVisionCoordinator]):
@@ -154,3 +158,69 @@ class GateCameraBinarySensor(GateVisionBase, BinarySensorEntity):
     @property
     def available(self) -> bool:
         return True
+
+
+class ZoneStateBinarySensor(GateVisionBase, BinarySensorEntity):
+    """Состояние выбранной области (зоны): обученное или по общему правилу.
+
+    Тип сущности задаётся у зоны: «открыто/закрыто» (device_class garage_door)
+    или «включено/выключено» (без device_class — Home Assistant показывает Вкл/Выкл).
+    """
+
+    _attr_has_entity_name = False
+
+    def __init__(self, coordinator: GateVisionCoordinator, entry: ConfigEntry, zone_id: str) -> None:
+        super().__init__(coordinator, entry)
+        self._zone_id = zone_id
+        zone = self._zone or {}
+        self._attr_unique_id = f"{entry.entry_id}_zone_{zone_id}"
+        self._attr_name = zone.get("name") or f"Зона {zone_id}"
+        self._attr_device_class = (
+            BinarySensorDeviceClass.GARAGE_DOOR
+            if zone.get("kind", KIND_OPEN_CLOSED) == KIND_OPEN_CLOSED
+            else None
+        )
+        self._attr_icon = "mdi:garage-variant" if self._attr_device_class else "mdi:toggle-switch"
+
+    @property
+    def _zone(self) -> dict[str, Any]:
+        for zone in self.coordinator.settings.zones:
+            if zone["id"] == self._zone_id:
+                return zone
+        return {}
+
+    @property
+    def _zone_data(self) -> dict[str, Any]:
+        for item in (self.data.get("zones") or []):
+            if item.get("id") == self._zone_id:
+                return item
+        return {}
+
+    @property
+    def is_on(self) -> bool | None:
+        state = self._zone_data.get("state")
+        if state == STATE_OPEN:
+            return True
+        if state == STATE_CLOSED:
+            return False
+        return None
+
+    @property
+    def available(self) -> bool:
+        return bool(self.coordinator.last_update_success)
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        data = self._zone_data
+        zone = self._zone
+        return {
+            "zone_id": self._zone_id,
+            "state": data.get("state"),
+            "confidence": data.get("conf"),
+            "current": data.get("mean"),
+            "samples": data.get("samples"),
+            "kind": zone.get("kind"),
+            "role": zone.get("role"),
+            "geometry": {k: zone.get(k) for k in ("x", "y", "w", "h")},
+            "learned": bool((zone.get("samples") or {}).get("open") or (zone.get("samples") or {}).get("closed")),
+        }
