@@ -14,6 +14,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 
 from .const import (
+    CONF_CAMERA_ENTITY,
     CONF_CONTROL,
     DEFAULT_ZONES,
     CONF_LEARN_MODE,
@@ -77,6 +78,7 @@ class Settings:
         merged = {**self.entry.data, **self.entry.options}
         self.raw = merged
 
+        self.camera_entity: str = merged.get(CONF_CAMERA_ENTITY, "")
         self.snapshot_url: str = merged.get("snapshot_url", "")
         self.go2rtc_base: str = merged.get("go2rtc_base", "")
         self.scan_interval: int = int(merged.get("scan_interval", 5))
@@ -148,7 +150,7 @@ class Settings:
                 control = dict(self.control)
                 control.update(value)
                 options[CONF_CONTROL] = control
-            elif key in ("snapshot_url", "go2rtc_base", "learn_mode", "left_open_min"):
+            elif key in ("camera_entity", "snapshot_url", "go2rtc_base", "learn_mode", "left_open_min"):
                 options[key] = value
             elif key == "scan_interval":
                 options[key] = int(value)
@@ -158,6 +160,7 @@ class Settings:
     def as_dict(self) -> dict[str, Any]:
         """Текущие настройки для панели."""
         return {
+            "camera_entity": self.camera_entity,
             "snapshot_url": self.snapshot_url,
             "go2rtc_base": self.go2rtc_base,
             "scan_interval": self.scan_interval,
