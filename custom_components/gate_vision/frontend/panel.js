@@ -41,7 +41,7 @@ class GateVisionPanel extends HTMLElement {
     super();
     this._hass = null;
     this._panel = null;
-    this._tab = "thresholds";
+    this._tab = "setup";
     this._state = null;
     this._settings = null;
     this._frameUrl = null;
@@ -177,12 +177,10 @@ class GateVisionPanel extends HTMLElement {
         </div>
         <div class="gv-card">
           <div class="gv-tabs">
-            <div class="gv-tab active" data-tab="thresholds">Пороги</div>
+            <div class="gv-tab active" data-tab="setup">Настройка</div>
             <div class="gv-tab" data-tab="reactions">Реагирования</div>
             <div class="gv-tab" data-tab="control">Управление</div>
-            <div class="gv-tab" data-tab="learn">Обучение</div>
             <div class="gv-tab" data-tab="sched">Расписания</div>
-            <div class="gv-tab" data-tab="camera">Камера</div>
             <div class="gv-tab" data-tab="log">Журнал</div>
           </div>
           <div id="gvTabBody"></div>
@@ -519,12 +517,10 @@ class GateVisionPanel extends HTMLElement {
   _renderTab() {
     const body = this._root.querySelector("#gvTabBody");
     body.innerHTML = "";
-    if (this._tab === "thresholds") this._renderThresholds(body);
+    if (this._tab === "setup") this._renderSetup(body);
     else if (this._tab === "reactions") this._renderReactions(body);
     else if (this._tab === "control") this._renderControl(body);
-    else if (this._tab === "learn") this._renderLearn(body);
     else if (this._tab === "sched") this._renderSchedules(body);
-    else if (this._tab === "camera") this._renderCamera(body);
     else this._renderLog(body);
     this._renderZoneList();
   }
@@ -653,6 +649,131 @@ class GateVisionPanel extends HTMLElement {
   }
 
 
+
+  /* ------------------------------------------------------------------ быстрая настройка */
+  _renderSetup(host) {
+    const zones = this._settings?.zones || [];
+    const measured = {};
+    ((this._state && this._state.zones) || []).forEach((z) => { measured[z.id] = z; });
+
+    const presets = document.createElement("div");
+    presets.className = "gv-row";
+    presets.innerHTML = `<label>Пресет объекта</label>
+      <select id="gvPreset">
+        <option value="">— выбрать —</option>
+        <option value="gate">Ворота (Открыто/Закрыто)</option>
+        <option value="door">Дверь / калитка (Открыто/Закрыто)</option>
+        <option value="lamp">Лампа / свет (Включено/Выключено)</option>
+        <option value="custom">Свой (ничего не менять)</option>
+      </select>`;
+    host.appendChild(presets);
+
+    const hint = document.createElement("div");
+    hint.className = "gv-hint";
+    hint.innerHTML = "<b>Порядок:</b> 1) выбери камеру; 2) нарисуй зону на кадре (мышью); " +
+      "3) приведи объект в состояние и нажми «Запомнить ОТКРЫТО», затем «Запомнить ЗАКРЫТО» " +
+      "(лучше по разу днём и ночью); 4) включи «создавать сущность» и сохрани. Готово.";
+    host.appendChild(hint);
+
+    // --- камера ---
+    const cam = document.createElement("details");
+    cam.open = !this._settings?.camera_entity && !this._settings?.snapshot_url;
+    cam.innerHTML = `<summary style="cursor:pointer;margin:8px 0">Камера и опрос</summary>`;
+    host.appendChild(cam);
+    this._renderCamera(cam);
+
+    // --- зоны: обучение и сущность ---
+    const ztitle = document.createElement("div");
+    ztitle.className = "gv-hint";
+    ztitle.style.marginTop = "12px";
+    ztitle.innerHTML = "<b>Зоны и обучение</b>";
+    host.appendChild(ztitle);
+
+    if (!zones.length) {
+      const empty = document.createElement("div");
+      empty.className = "gv-hint";
+      empty.textContent = "Зон нет — нарисуй первую мышью на кадре слева.";
+      host.appendChild(empty);
+    }
+    zones.forEach((z) => {
+      const m = measured[z.id] || {};
+      const kind = z.kind === "on_off" ? "on_off" : "open_closed";
+      const labelOn = kind === "on_off" ? "ВКЛ" : "ОТКРЫТО";
+      const labelOff = kind === "on_off" ? "ВЫКЛ" : "ЗАКРЫТО";
+      const card = document.createElement("div");
+      card.className = "gv-ev";
+      card.innerHTML = `
+        <h4>${z.name} <span class="gv-meta">(${z.id}, ${ROLE_TITLES[z.role] || z.role})</span></h4>
+        <div class="gv-meta">сейчас: <b>${m.mean ?? "—"}</b> · состояние: <b>${m.state === "open" ? labelOn : m.state === "closed" ? labelOff : "—"}</b>
+          (уверенность ${m.conf ?? "—"}) · замеров: ${labelOn} ${(z.samples?.open || []).length}, ${labelOff} ${(z.samples?.closed || []).length}</div>
+        <div class="gv-ch" style="margin-top:8px">
+          <button class="gv-btn" data-learn="open">Запомнить ${labelOn}</button>
+          <button class="gv-btn" data-learn="closed">Запомнить ${labelOff}</button>
+          <button class="gv-btn secondary" data-auto="open">Авто ${labelOn} (10 замеров)</button>
+          <button class="gv-btn secondary" data-auto="closed">Авто ${labelOff} (10 замеров)</button>
+          <button class="gv-btn secondary" data-reset="1">Сбросить</button>
+        </div>
+        <div class="gv-ch">
+          <label><input type="checkbox" data-ent="1" ${z.entity ? "checked" : ""}> создавать сущность</label>
+          <label>тип:
+            <select data-kind="1">
+              <option value="open_closed" ${kind === "open_closed" ? "selected" : ""}>Открыто / Закрыто</option>
+              <option value="on_off" ${kind === "on_off" ? "selected" : ""}>Включено / Выключено</option>
+            </select></label>
+          <label>имя: <input type="text" data-name="1" value="${z.name}"></label>
+          <button class="gv-btn" data-savez="1">Сохранить зону</button>
+        </div>
+        <div class="gv-hint">замеры: ${JSON.stringify(z.samples || {})}</div>`;
+      card.querySelector('[data-learn="open"]').onclick = () => this._learn(z.id, "open");
+      card.querySelector('[data-learn="closed"]').onclick = () => this._learn(z.id, "closed");
+      card.querySelector('[data-auto="open"]').onclick = () => this._learn(z.id, "open", null, 10);
+      card.querySelector('[data-auto="closed"]').onclick = () => this._learn(z.id, "closed", null, 10);
+      card.querySelector("[data-reset]").onclick = () => this._learn(z.id, null, "reset");
+      card.querySelector("[data-savez]").onclick = () => {
+        const patch = (this._settings.zones || []).map((x) => ({ ...x }));
+        const t = patch.find((x) => x.id === z.id);
+        t.entity = card.querySelector("[data-ent]").checked;
+        t.kind = card.querySelector("[data-kind]").value;
+        t.name = card.querySelector("[data-name]").value;
+        this._save({ zones: patch });
+      };
+      host.appendChild(card);
+    });
+
+    // --- дополнительно: пороги и прочее ---
+    const adv = document.createElement("details");
+    adv.innerHTML = `<summary style="cursor:pointer;margin:10px 0">Дополнительно: пороги (нужны только без обучения), режим обучения, «открыто дольше»</summary>`;
+    host.appendChild(adv);
+    this._renderThresholds(adv);
+    const extra = document.createElement("div");
+    extra.className = "gv-row";
+    extra.innerHTML = `<label>Сообщать, что открыто дольше, мин</label>
+      <input type="number" id="gvLeftOpen" value="${this._settings?.left_open_min || 15}">
+      <label><input type="checkbox" id="gvLearnMode" ${this._settings?.learn_mode ? "checked" : ""}> режим обучения (только пишет, не сообщает)</label>
+      <button class="gv-btn" id="gvExtraSave">Сохранить</button>`;
+    extra.querySelector("#gvExtraSave").onclick = () => this._save({
+      left_open_min: parseInt(extra.querySelector("#gvLeftOpen").value || "15", 10),
+      learn_mode: extra.querySelector("#gvLearnMode").checked,
+    });
+    adv.appendChild(extra);
+
+    // --- пресеты ---
+    presets.querySelector("#gvPreset").onchange = (e) => this._applyPreset(e.target.value);
+  }
+
+  _applyPreset(name) {
+    if (!name || name === "custom") return;
+    const zones = (this._settings.zones || []).map((z) => ({ ...z }));
+    if (!zones.length) return;
+    const t = zones[0];
+    if (name === "gate") { t.kind = "open_closed"; t.role = "closed"; t.name = t.name || "Ворота"; }
+    if (name === "door") { t.kind = "open_closed"; t.role = "closed"; t.name = "Дверь"; }
+    if (name === "lamp") { t.kind = "on_off"; t.role = "closed"; t.name = "Свет"; }
+    t.entity = true;
+    this._save({ zones });
+    this._toast("Пресет применён");
+  }
+
   _renderLearn(host) {
     const zones = this._settings?.zones || [];
     const measured = {};
@@ -705,9 +826,12 @@ class GateVisionPanel extends HTMLElement {
     });
   }
 
-  async _learn(zoneId, state, action) {
+  async _learn(zoneId, state, action, count) {
     try {
-      const body = action === "reset" ? { zone_id: zoneId, action: "reset" } : { zone_id: zoneId, state };
+      if (count > 1) this._toast(`Собираю ${count} замеров…`);
+      const body = action === "reset"
+        ? { zone_id: zoneId, action: "reset" }
+        : { zone_id: zoneId, state, count: count || 1 };
       const res = await this._hass.callApi("POST", "gate_vision/learn", body);
       this._toast(res.message || "готово");
       await this._load(true, true);
@@ -724,7 +848,9 @@ class GateVisionPanel extends HTMLElement {
     info.className = "gv-hint";
     info.innerHTML = "Автоматизации запускают реле ворот по расписанию (время местное). " +
       "Можно добавить сколько нужно. Действие: «импульс» — просто нажать; " +
-      "«открыть»/«закрыть» — импульс только если ворота не в этом состоянии; «стоп» — если движутся.";
+      "«открыть»/«закрыть» — импульс только если ворота не в этом состоянии; «стоп» — если движутся. " +
+      "Можно задать условие «выполнять, если состояние» и включить проверку результата по камере — " +
+      "если состояние не подтвердится, в журнал попадёт запись.";
     host.appendChild(info);
 
     const render = () => {
@@ -755,6 +881,16 @@ class GateVisionPanel extends HTMLElement {
               <option value="stop" ${item.action === "stop" ? "selected" : ""}>стоп</option>
             </select>
           </div>
+          <div class="gv-row">
+            <label>выполнять, если состояние</label>
+            <select data-f="require_state">
+              <option value="any" ${(item.require_state || "any") === "any" ? "selected" : ""}>любое</option>
+              <option value="closed" ${item.require_state === "closed" ? "selected" : ""}>закрыто</option>
+              <option value="open" ${item.require_state === "open" ? "selected" : ""}>открыто</option>
+              <option value="moving" ${item.require_state === "moving" ? "selected" : ""}>движется</option>
+            </select>
+            <label><input type="checkbox" data-f="verify" ${item.verify !== false ? "checked" : ""}> проверять результат по камере</label>
+          </div>
           <div class="gv-ch" data-dayscustom style="display:none">
             ${["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"].map((d, i) =>
               `<label><input type="checkbox" data-day="${i}" ${(item.days || []).includes(i) ? "checked" : ""}> ${d}</label>`).join("")}
@@ -780,7 +916,8 @@ class GateVisionPanel extends HTMLElement {
 
     wrap.querySelector("#gvSchedAdd").onclick = () => {
       list.push({ id: "s" + Date.now().toString().slice(-6), name: "Автоматизация " + (list.length + 1),
-                  enabled: true, time: "10:00", days: [0, 1, 2, 3, 4, 5, 6], action: "impulse" });
+                  enabled: true, time: "10:00", days: [0, 1, 2, 3, 4, 5, 6], action: "impulse",
+                  require_state: "any", verify: true });
       render();
     };
     wrap.querySelector("#gvSchedSave").onclick = () => {
@@ -795,7 +932,8 @@ class GateVisionPanel extends HTMLElement {
         }
         const get = (f) => { const el = row.querySelector(`[data-f="${f}"]`); return el ? (el.type === "checkbox" ? el.checked : el.value) : undefined; };
         return { id: list[idx].id, name: get("name"), enabled: get("enabled"), time: get("time"),
-                 days, action: get("action"), last_run: list[idx].last_run || null };
+                 days, action: get("action"), require_state: get("require_state"),
+                 verify: get("verify"), last_run: list[idx].last_run || null };
       });
       this._save({ schedules: patch });
     };
