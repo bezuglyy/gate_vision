@@ -9,6 +9,7 @@ const THRESHOLD_META = [
   ["street_low_t", "Порог «открыто» днём", 0, 255, 1],
   ["dark_low_t", "Порог «открыто» ночью/ИК", 0, 255, 1],
   ["bright", "«Светло» (пересвет окон)", 100, 255, 1],
+  ["dark_band", "Окна ночью (тёмная полоса)", 20, 140, 5],
   ["frame_t", "Зажато тёмным (доля)", 0.2, 0.95, 0.05],
   ["min_band_f", "Мин. высота полосы окон", 0.01, 0.3, 0.01],
   ["max_band_f", "Макс. высота полосы окон", 0.2, 0.9, 0.05],
@@ -132,12 +133,24 @@ class GateVisionPanel extends HTMLElement {
         .gv-log { max-height:420px; overflow:auto; font-size:13px; }
         .gv-log div { padding:5px 6px; border-bottom:1px solid var(--divider-color); }
         .gv-hint { font-size:12px; opacity:.7; margin-top:6px; }
+        .gv-ztools { display:flex; flex-wrap:wrap; gap:8px; align-items:center; margin:8px 0 6px; font-size:13px; }
+        .gv-ztools select { background: var(--secondary-background-color); color: var(--primary-text-color);
+                            border:1px solid var(--divider-color); border-radius:6px; padding:5px 8px; }
+        .gv-zone input[type=checkbox] { flex:0 0 auto; }
+        .gv-zprops { margin-top:10px; padding:10px; border:1px solid var(--divider-color); border-radius:8px;
+                     background: var(--secondary-background-color); }
+        .gv-zprops h4 { margin:0 0 8px; font-size:13px; }
+        .gv-zgrid { display:grid; grid-template-columns: repeat(4, 1fr); gap:8px; }
+        .gv-zgrid label { display:flex; flex-direction:column; gap:3px; font-size:12px; opacity:.9; }
+        .gv-zgrid input { width:100%; background: var(--card-background-color); color: var(--primary-text-color);
+                          border:1px solid var(--divider-color); border-radius:6px; padding:4px 6px; font-size:13px; }
         .gv-ok { color:#15803d; } .gv-warn { color:#b45309; } .gv-err { color:#b91c1c; }
       </style>
       <div class="gv-head">
         <div class="gv-badge unknown" id="gvState">…</div>
         <div class="gv-meta" id="gvMeta"></div>
         <div style="flex:1 1 auto"></div>
+        <button class="gv-btn secondary" id="gvBack" title="Вернуться в меню Home Assistant">◀ В меню</button>
         <label class="gv-meta"><input type="checkbox" id="gvLive" checked> живой кадр</label>
         <button class="gv-btn secondary" id="gvRefresh">Обновить</button>
         <button class="gv-btn" id="gvTest">Проверить сейчас</button>
@@ -179,7 +192,13 @@ class GateVisionPanel extends HTMLElement {
     this._canvas.addEventListener("pointermove", (e) => this._onPointerMove(e));
     this._canvas.addEventListener("pointerup", (e) => this._onPointerUp(e));
     this._canvas.addEventListener("pointerleave", () => { this._drag = null; });
+    this._canvas.tabIndex = 0;
+    this._canvas.addEventListener("keydown", (e) => this._onKey(e));
 
+    this._root.querySelector("#gvBack").onclick = () => {
+      if (window.history.length > 1) window.history.back();
+      else window.location.assign("/");
+    };
     this._root.querySelector("#gvRefresh").onclick = () => this._load(true);
     this._root.querySelector("#gvTest").onclick = () => this._test();
     this._root.querySelector("#gvLive").onchange = (e) => {
@@ -364,26 +383,106 @@ class GateVisionPanel extends HTMLElement {
   _renderZoneList() {
     const host = this._root.querySelector("#gvZoneList");
     const zones = this._settings?.zones || [];
+    const sel = this._zoneSelection || (this._zoneSelection = new Set());
+    [...sel].forEach((id) => { if (!zones.some((z) => z.id === id)) sel.delete(id); });
     host.innerHTML = "";
+
+    // --- панель массовых действий ---
+    const bar = document.createElement("div");
+    bar.className = "gv-ztools";
+    bar.innerHTML = `
+      <label class="gv-meta"><input type="checkbox" id="gvAll" ${sel.size && sel.size === zones.length ? "checked" : ""}> все зоны</label>
+      <span class="gv-meta">выбрано: <b>${sel.size}</b> из ${zones.length}</span>
+      <select id="gvBulkRole">
+        <option value="">— роль для выбранных —</option>
+        ${Object.keys(ROLE_TITLES).map((r) => `<option value="${r}">${ROLE_TITLES[r]}</option>`).join("")}
+      </select>
+      <button class="gv-btn secondary" id="gvBulkApply">Применить</button>
+      <button class="gv-btn danger" id="gvBulkDel">Удалить выбранные</button>
+      <button class="gv-btn secondary" id="gvClearSel">Снять выбор</button>`;
+    bar.querySelector("#gvAll").onchange = (e) => {
+      sel.clear();
+      if (e.target.checked) zones.forEach((z) => sel.add(z.id));
+      this._renderZoneList(); this._draw();
+    };
+    bar.querySelector("#gvBulkApply").onclick = () => {
+      const role = bar.querySelector("#gvBulkRole").value;
+      if (!role || !sel.size) return;
+      zones.forEach((z) => { if (sel.has(z.id)) z.role = role; });
+      this._renderZoneList(); this._draw();
+    };
+    bar.querySelector("#gvBulkDel").onclick = () => {
+      if (!sel.size) return;
+      this._settings.zones = zones.filter((z) => !sel.has(z.id));
+      sel.clear();
+      this._selectedZone = null;
+      this._renderZoneList(); this._draw();
+    };
+    bar.querySelector("#gvClearSel").onclick = () => { sel.clear(); this._renderZoneList(); this._draw(); };
+    host.appendChild(bar);
+
+    // --- строки зон ---
     zones.forEach((z) => {
       const row = document.createElement("div");
       row.className = "gv-zone" + (z.id === this._selectedZone ? " sel" : "");
-      row.innerHTML = `<span class="gv-dot" style="background:${ROLE_COLORS[z.role]}"></span>
-        <input type="text" value="${z.name}" style="flex:1 1 auto;background:transparent;border:none;color:inherit">
+      row.innerHTML = `
+        <input type="checkbox" class="gv-zcheck" ${sel.has(z.id) ? "checked" : ""} title="выбрать для массовых действий">
+        <span class="gv-dot" style="background:${ROLE_COLORS[z.role]}"></span>
+        <input type="text" class="gv-zname" value="${z.name}"
+               style="flex:1 1 auto;background:transparent;border:none;color:inherit">
+        <span class="gv-meta" style="white-space:nowrap">${(z.w * 100).toFixed(1)}×${(z.h * 100).toFixed(1)} %</span>
         <select>${Object.keys(ROLE_TITLES).map((r) =>
           `<option value="${r}" ${r === z.role ? "selected" : ""}>${ROLE_TITLES[r]}</option>`).join("")}</select>
-        <button class="gv-btn danger" style="padding:4px 9px">✕</button>`;
-      row.onclick = (e) => { if (e.target.tagName === "BUTTON" || e.target.tagName === "INPUT" || e.target.tagName === "SELECT") return;
-        this._selectedZone = z.id; this._renderZoneList(); this._draw(); };
-      row.querySelector("input").onchange = (e) => { z.name = e.target.value; };
+        <button class="gv-btn danger" style="padding:4px 9px" title="удалить зону">✕</button>`;
+      row.onclick = (e) => {
+        if (["BUTTON", "INPUT", "SELECT"].includes(e.target.tagName)) return;
+        this._selectedZone = z.id;
+        this._renderZoneList(); this._draw();
+      };
+      row.querySelector(".gv-zcheck").onchange = (e) => {
+        if (e.target.checked) sel.add(z.id); else sel.delete(z.id);
+        this._selectedZone = z.id;
+        this._renderZoneList(); this._draw();
+      };
+      row.querySelector(".gv-zname").onchange = (e) => { z.name = e.target.value; };
       row.querySelector("select").onchange = (e) => { z.role = e.target.value; this._renderZoneList(); this._draw(); };
       row.querySelector("button").onclick = () => {
         this._settings.zones = zones.filter((x) => x.id !== z.id);
+        sel.delete(z.id);
         this._selectedZone = null;
         this._renderZoneList(); this._draw();
       };
       host.appendChild(row);
     });
+
+    // --- точные размеры выбранной зоны ---
+    const zone = zones.find((z) => z.id === this._selectedZone);
+    if (zone) {
+      const box = document.createElement("div");
+      box.className = "gv-zprops";
+      box.innerHTML = `
+        <h4>Размер и положение: <span style="color:${ROLE_COLORS[zone.role]}">${zone.name}</span></h4>
+        <div class="gv-zgrid">
+          <label>X, %<input type="number" step="0.5" min="0" max="100" data-p="x" value="${(zone.x * 100).toFixed(1)}"></label>
+          <label>Y, %<input type="number" step="0.5" min="0" max="100" data-p="y" value="${(zone.y * 100).toFixed(1)}"></label>
+          <label>Ширина, %<input type="number" step="0.5" min="0.5" max="100" data-p="w" value="${(zone.w * 100).toFixed(1)}"></label>
+          <label>Высота, %<input type="number" step="0.5" min="0.5" max="100" data-p="h" value="${(zone.h * 100).toFixed(1)}"></label>
+        </div>
+        <div class="gv-hint">Можно тянуть мышью, а можно задать точно здесь. Стрелки на кадре двигают выбранную
+        зону (с Shift — мелким шагом), «Сохранить зоны» записывает всё в Home Assistant.</div>`;
+      box.querySelectorAll("input[data-p]").forEach((inp) => {
+        inp.onchange = () => {
+          const v = Math.max(0, Math.min(100, parseFloat(inp.value || "0"))) / 100;
+          const key = inp.dataset.p;
+          if (key === "x") zone.x = Math.min(1 - zone.w, v);
+          else if (key === "y") zone.y = Math.min(1 - zone.h, v);
+          else if (key === "w") zone.w = Math.max(0.005, Math.min(1 - zone.x, v));
+          else zone.h = Math.max(0.005, Math.min(1 - zone.y, v));
+          this._renderZoneList(); this._draw();
+        };
+      });
+      host.appendChild(box);
+    }
   }
 
   _renderTab() {
@@ -420,7 +519,7 @@ class GateVisionPanel extends HTMLElement {
     btn.className = "gv-btn secondary";
     btn.textContent = "Вернуть пороги по умолчанию";
     btn.onclick = () => this._save({ thresholds: {
-      street_low_t: 140, dark_low_t: 60, bright: 190, frame_t: 0.65,
+      street_low_t: 140, dark_low_t: 60, bright: 190, dark_band: 70, frame_t: 0.65,
       min_band_f: 0.08, max_band_f: 0.55, gray_sat: 0.02, frame_min_mean: 15, move_diff: 6 } });
     wrap.appendChild(btn);
     host.appendChild(wrap);
@@ -572,6 +671,10 @@ class GateVisionPanel extends HTMLElement {
     const hit = this._hitZone(p);
     if (hit) {
       this._selectedZone = hit.zone.id;
+      if (e.ctrlKey || e.metaKey || e.shiftKey) {
+        const sel = this._zoneSelection || (this._zoneSelection = new Set());
+        if (sel.has(hit.zone.id)) sel.delete(hit.zone.id); else sel.add(hit.zone.id);
+      }
       this._drag = { zone: hit.zone, resize: hit.resize, start: p, orig: { ...hit.zone } };
     } else {
       const id = `z${Date.now().toString().slice(-6)}`;
@@ -596,6 +699,20 @@ class GateVisionPanel extends HTMLElement {
       zone.x = Math.min(1 - orig.w, Math.max(0, orig.x + dx));
       zone.y = Math.min(1 - orig.h, Math.max(0, orig.y + dy));
     }
+    this._draw();
+  }
+
+  _onKey(e) {
+    const zone = (this._settings?.zones || []).find((z) => z.id === this._selectedZone);
+    if (!zone) return;
+    const step = e.shiftKey ? 0.001 : 0.005;
+    const map = { ArrowLeft: ["x", -1], ArrowRight: ["x", 1], ArrowUp: ["y", -1], ArrowDown: ["y", 1] };
+    const act = map[e.key];
+    if (!act) return;
+    e.preventDefault();
+    if (act[0] === "x") zone.x = Math.max(0, Math.min(1 - zone.w, zone.x + act[1] * step));
+    else zone.y = Math.max(0, Math.min(1 - zone.h, zone.y + act[1] * step));
+    this._renderZoneList();
     this._draw();
   }
 
