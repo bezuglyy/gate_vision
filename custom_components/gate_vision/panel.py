@@ -17,6 +17,11 @@ _LOGGER = logging.getLogger(__name__)
 async def async_register_panel(hass: HomeAssistant) -> None:
     """Отдать статику панели и добавить её в боковое меню."""
     frontend_dir = Path(__file__).parent / "frontend"
+    # версия для сброса кэша браузера = время правки panel.js
+    try:
+        js_version = int((frontend_dir / "panel.js").stat().st_mtime)
+    except OSError:
+        js_version = 1
     try:
         await hass.http.async_register_static_paths(
             [StaticPathConfig(URL_STATIC, str(frontend_dir), True)]
@@ -35,7 +40,7 @@ async def async_register_panel(hass: HomeAssistant) -> None:
             webcomponent_name="gate-vision-panel",
             sidebar_title=PANEL_TITLE,
             sidebar_icon=PANEL_ICON,
-            module_url=f"{URL_STATIC}/panel.js?v=3",
+            module_url=f"{URL_STATIC}/panel.js?v={js_version}",
             embed_iframe=False,
             require_admin=False,
             config={"domain": "gate_vision"},
