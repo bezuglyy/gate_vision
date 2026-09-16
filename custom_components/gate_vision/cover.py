@@ -31,6 +31,7 @@ from homeassistant.util import dt as dt_util
 from .binary_sensor import GateVisionBase
 from .const import DOMAIN, STATE_CLOSED, STATE_OPEN, STATE_UNKNOWN
 from .coordinator import GateVisionCoordinator
+from .relay import async_relay_pulse
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -144,34 +145,8 @@ class GateCover(GateVisionBase, CoverEntity):
             self._busy = False
 
     async def _impulse(self) -> None:
-        """Один импульс реле: включить на impulse_ms и выключить."""
-        control = self.coordinator.settings.control
-        impulse_ms = int(control.get("impulse_ms", 800))
-        mode = control.get("mode", "switch_impulse")
-
-        if mode == "mqtt_impulse":
-            topic = (control.get("mqtt_topic") or "").strip()
-            if not topic:
-                raise HomeAssistantError("gate_vision: не задан MQTT-топик реле")
-            await self.hass.services.async_call(
-                "mqtt", "publish", {"topic": topic, "payload": "ON"}, blocking=True
-            )
-            await asyncio.sleep(impulse_ms / 1000)
-            await self.hass.services.async_call(
-                "mqtt", "publish", {"topic": topic, "payload": "OFF"}, blocking=True
-            )
-        else:
-            entity = (control.get("switch_entity") or "").strip()
-            if not entity:
-                raise HomeAssistantError("gate_vision: не задана сущность реле ворот")
-            await self.hass.services.async_call(
-                "switch", "turn_on", {"entity_id": entity}, blocking=True
-            )
-            await asyncio.sleep(impulse_ms / 1000)
-            await self.hass.services.async_call(
-                "switch", "turn_off", {"entity_id": entity}, blocking=True
-            )
-        _LOGGER.info("gate_vision: импульс реле (%s, %s мс)", mode, impulse_ms)
+        """Импульс на реле ворот (общая логика с расписаниями)."""
+        await async_relay_pulse(self.hass, self.coordinator.settings.control)
 
     async def _wait_confirmation(self, target: str) -> None:
         """Дождаться подтверждения по камере."""
