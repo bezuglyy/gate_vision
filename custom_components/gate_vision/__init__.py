@@ -12,6 +12,7 @@ import logging
 from datetime import timedelta
 
 from homeassistant.config_entries import ConfigEntry
+from homeassistant.exceptions import ConfigEntryNotReady
 from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant
 
@@ -38,7 +39,16 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Настроить интеграцию по записи конфигурации."""
     settings = get_settings(hass, entry)
     coordinator = GateVisionCoordinator(hass, entry, settings)
-    await coordinator.async_config_entry_first_refresh()
+    # Первый опрос может не получиться (камера ещё не зарегистрирована при старте HA,
+    # сущность переименована, поток временно недоступен) — интеграцию всё равно поднимаем:
+    # сущности появятся и оживут при первом успешном опросе.
+    try:
+        await coordinator.async_config_entry_first_refresh()
+    except ConfigEntryNotReady as err:
+        _LOGGER.warning(
+            "gate_vision: первый опрос не удался (%s) — продолжаю настройку, буду повторять", err
+        )
+        await coordinator.async_refresh()
 
     hass.data.setdefault(DOMAIN, {})[entry.entry_id] = coordinator
 
