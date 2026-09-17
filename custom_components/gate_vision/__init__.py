@@ -22,6 +22,7 @@ from .panel import async_register_panel, async_unregister_panel
 from .schedules import ScheduleRunner
 from .settings import get_settings
 from .views import (
+    GateCamerasView,
     GateEventsView,
     GateFrameView,
     GateLearnView,
@@ -76,6 +77,7 @@ async def _async_register_http(hass: HomeAssistant) -> None:
         GateTestView(),
         GateEventsView(),
         GateLearnView(),
+        GateCamerasView(),
     ):
         hass.http.register_view(view)
     hass.data[f"{DOMAIN}_views_registered"] = True
