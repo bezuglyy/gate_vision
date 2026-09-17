@@ -3,7 +3,10 @@
  */
 
 const ROLE_COLORS = { closed: "#22c55e", open: "#f59e0b", ignore: "#64748b" };
-const ROLE_TITLES = { closed: "Закрыто (окна)", open: "Открыто (низ проёма)", ignore: "Исключение" };
+// цвет контура зоны по фактическому состоянию: открыто — красный, закрыто — зелёный
+const STATE_COLORS = { open: "#ef4444", closed: "#22c55e", unknown: "#f59e0b" };
+const STATE_TITLES = { open: "ОТКРЫТО", closed: "ЗАКРЫТО", unknown: "?" };
+const ROLE_TITLES = { closed: "Закрыто / Выключено", open: "Открыто / Включено", ignore: "Исключение" };
 
 const THRESHOLD_META = [
   ["street_low_t", "Порог «открыто» днём", 0, 255, 1],
@@ -164,8 +167,8 @@ class GateVisionPanel extends HTMLElement {
           <div class="gv-tools">
             <span>Добавить зону:</span>
             <select id="gvNewRole">
-              <option value="open">Открыто (низ проёма)</option>
-              <option value="closed">Закрыто (окна)</option>
+              <option value="open">Открыто / Включено</option>
+              <option value="closed">Закрыто / Выключено</option>
               <option value="ignore">Исключение</option>
             </select>
             <span class="gv-hint">ЛКМ по пустому месту — нарисовать; тянуть — сдвинуть; угол — изменить размер</span>
@@ -373,9 +376,13 @@ class GateVisionPanel extends HTMLElement {
     else { ctx.fillStyle = "#111"; ctx.fillRect(0, 0, w, h); }
     const zones = this._settings?.zones || [];
     const line = Math.max(2, Math.round(w / 500));
+    const stateOf = {};
+    ((this._state && this._state.zones) || []).forEach((z) => { stateOf[z.id] = z.state; });
     zones.forEach((z) => {
       const x = z.x * w, y = z.y * h, zw = z.w * w, zh = z.h * h;
-      const color = ROLE_COLORS[z.role] || "#fff";
+      let color = ROLE_COLORS[z.role] || "#fff";
+      const st = stateOf[z.id];
+      if (z.role !== "ignore" && st) color = STATE_COLORS[st] || color;
       ctx.strokeStyle = color;
       ctx.lineWidth = z.id === this._selectedZone ? line * 2 : line;
       ctx.strokeRect(x, y, zw, zh);
@@ -383,7 +390,8 @@ class GateVisionPanel extends HTMLElement {
       ctx.fillRect(x, y, zw, zh);
       ctx.font = `${Math.round(w / 60)}px sans-serif`;
       ctx.fillStyle = color;
-      const label = `${ROLE_TITLES[z.role] || z.role}: ${z.name}`;
+      const stTitle = stateOf[z.id] ? ` — ${STATE_TITLES[stateOf[z.id]] || stateOf[z.id]}` : "";
+      const label = `${z.name}${stTitle}`;
       ctx.fillText(label, x + 4, Math.max(14, y - 4));
       // уголок для изменения размера
       ctx.fillStyle = color;
@@ -394,6 +402,8 @@ class GateVisionPanel extends HTMLElement {
   _renderZoneList() {
     const host = this._root.querySelector("#gvZoneList");
     const zones = this._settings?.zones || [];
+    const measured = {};
+    ((this._state && this._state.zones) || []).forEach((z) => { measured[z.id] = z; });
     const sel = this._zoneSelection || (this._zoneSelection = new Set());
     [...sel].forEach((id) => { if (!zones.some((z) => z.id === id)) sel.delete(id); });
     host.innerHTML = "";
@@ -440,12 +450,15 @@ class GateVisionPanel extends HTMLElement {
     zones.forEach((z) => {
       const row = document.createElement("div");
       row.className = "gv-zone" + (z.id === this._selectedZone ? " sel" : "");
+      const zState = (measured[z.id] || {}).state;
+      const dotColor = (z.role !== "ignore" && zState) ? (STATE_COLORS[zState] || ROLE_COLORS[z.role]) : ROLE_COLORS[z.role];
       row.innerHTML = `
         <input type="checkbox" class="gv-zcheck" ${sel.has(z.id) ? "checked" : ""} title="выбрать для массовых действий">
-        <span class="gv-dot" style="background:${ROLE_COLORS[z.role]}"></span>
+        <span class="gv-dot" style="background:${dotColor}"></span>
         <input type="text" class="gv-zname" value="${z.name}"
                style="flex:1 1 auto;background:transparent;border:none;color:inherit">
         <span class="gv-meta" style="white-space:nowrap">${(z.w * 100).toFixed(1)}×${(z.h * 100).toFixed(1)} %</span>
+        <span class="gv-meta" style="white-space:nowrap;color:${dotColor}">${zState ? (STATE_TITLES[zState] || "") : ""}</span>
         <select>${Object.keys(ROLE_TITLES).map((r) =>
           `<option value="${r}" ${r === z.role ? "selected" : ""}>${ROLE_TITLES[r]}</option>`).join("")}</select>
         <button class="gv-btn danger" style="padding:4px 9px" title="удалить зону">✕</button>`;
