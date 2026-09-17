@@ -44,7 +44,7 @@ class GateVisionPanel extends HTMLElement {
     super();
     this._hass = null;
     this._panel = null;
-    this._tab = "setup";
+    this._tab = "cams";
     this._state = null;
     this._settings = null;
     this._frameUrl = null;
@@ -55,6 +55,10 @@ class GateVisionPanel extends HTMLElement {
     this._newRole = "open";
     this._dirty = false;
     this._zoneSaveTimer = null;
+    this._cams = [];
+    this._activeEntry = null;
+    this._gridCols = 2;
+    this._tileTimers = [];
     this._log = [];
   }
 
@@ -180,7 +184,8 @@ class GateVisionPanel extends HTMLElement {
         </div>
         <div class="gv-card">
           <div class="gv-tabs">
-            <div class="gv-tab active" data-tab="setup">Настройка</div>
+            <div class="gv-tab active" data-tab="cams">Камеры</div>
+            <div class="gv-tab" data-tab="setup">Настройка</div>
             <div class="gv-tab" data-tab="reactions">Реагирования</div>
             <div class="gv-tab" data-tab="control">Управление</div>
             <div class="gv-tab" data-tab="sched">Расписания</div>
@@ -216,6 +221,7 @@ class GateVisionPanel extends HTMLElement {
     this._root.querySelector("#gvZonesDefault").onclick = () => this._loadDefaults();
     this._root.querySelectorAll(".gv-tab").forEach((el) => {
       el.onclick = () => {
+        if (this._tileTimer && el.dataset.tab !== "cams") { clearInterval(this._tileTimer); this._tileTimer = null; }
         this._tab = el.dataset.tab;
         this._root.querySelectorAll(".gv-tab").forEach((t) => t.classList.toggle("active", t === el));
         this._renderTab();
@@ -226,20 +232,140 @@ class GateVisionPanel extends HTMLElement {
   }
 
   async _boot() {
+    await this._loadCameras();
     await this._load();
     this._renderTab();
+  }
+
+  async _loadCameras() {
+    try {
+      const data = await this._hass.callApi("GET", "gate_vision/cameras");
+      this._cams = data.cameras || [];
+      if (!this._activeEntry && this._cams.length) this._activeEntry = this._cams[0].entry_id;
+      const active = this._cams.find((c) => c.entry_id === this._activeEntry);
+      this._camTitle = active ? active.title : "";
+    } catch (err) {
+      this._cams = [];
+    }
+  }
+
+  /* ------------------------------------------------------------------ сетка камер */
+  _renderCameras(host) {
+    const bar = document.createElement("div");
+    bar.className = "gv-row";
+    bar.innerHTML = `<label>Колонок в сетке</label>
+      <select id="gvCols">
+        ${[1, 2, 3, 4].map((n) => `<option value="${n}" ${n === this._gridCols ? "selected" : ""}>${n}</option>`).join("")}
+      </select>
+      <button class="gv-btn secondary" id="gvCamsRefresh">Обновить камеры</button>
+      <span class="gv-meta">камер: ${this._cams.length} · активная: <b>${this._camTitle || "—"}</b></span>`;
+    host.appendChild(bar);
+    bar.querySelector("#gvCols").onchange = (e) => { this._gridCols = parseInt(e.target.value, 10); this._renderCameras(host); };
+    bar.querySelector("#gvCamsRefresh").onclick = async () => { await this._loadCameras(); this._renderCameras(host); };
+
+    const hint = document.createElement("div");
+    hint.className = "gv-hint";
+    hint.innerHTML = "Каждая камера — отдельная запись интеграции (Настройки → Устройства и службы → Добавить интеграцию → Обнаружение). " +
+      "Клик по плитке делает камеру активной: её настройки и обучение открываются во вкладке «Настройка».";
+    host.appendChild(hint);
+
+    if (!this._cams.length) {
+      const empty = document.createElement("div");
+      empty.className = "gv-hint";
+      empty.textContent = "Камер пока нет — добавьте интеграцию для каждой камеры.";
+      host.appendChild(empty);
+      return;
+    }
+
+    const grid = document.createElement("div");
+    grid.style.cssText = `display:grid;grid-template-columns:repeat(${this._gridCols},1fr);gap:10px`;
+    host.appendChild(grid);
+
+    this._cams.forEach((cam) => {
+      const card = document.createElement("div");
+      card.className = "gv-ev";
+      card.style.cursor = "pointer";
+      if (cam.entry_id === this._activeEntry) card.style.outline = "2px solid var(--primary-color)";
+      card.innerHTML = `
+        <div class="gv-row" style="margin:0 0 6px">
+          <span class="gv-badge ${cam.state || "unknown"}" style="font-size:12px;padding:3px 10px">${
+            cam.state === "open" ? "ОТКРЫТО" : cam.state === "closed" ? "ЗАКРЫТО" : "?"}</span>
+          <b style="font-size:13px">${cam.title}</b>
+          <span class="gv-meta" style="margin-left:auto">${cam.camera_ok === false ? "нет связи · " : ""}${cam.frame || ""}</span>
+        </div>
+        <canvas width="640" height="360" style="width:100%;border-radius:6px;background:#111"></canvas>
+        <div class="gv-meta" style="margin-top:4px">${
+          cam.camera_ok === false && cam.reason ? "⚠ " + cam.reason.slice(0, 70) : ""}</div>`;
+      card.onclick = async (e) => {
+        if (e.target.tagName === "CANVAS") {
+          this._activeEntry = cam.entry_id;
+          this._camTitle = cam.title;
+          await this._load(false, true);
+          this._tab = "setup";
+          this._root.querySelectorAll(".gv-tab").forEach((t) => t.classList.toggle("active", t.dataset.tab === "setup"));
+          this._renderTab();
+        }
+      };
+      grid.appendChild(card);
+      this._drawTile(cam, card.querySelector("canvas"));
+    });
+
+    // живое обновление плиток
+    if (this._tileTimer) clearInterval(this._tileTimer);
+    this._tileTimer = setInterval(async () => {
+      if (this._tab !== "cams") return;
+      await this._loadCameras();
+      const cards = grid.children;
+      for (let i = 0; i < this._cams.length && i < cards.length; i++) {
+        this._drawTile(this._cams[i], cards[i].querySelector("canvas"));
+      }
+    }, 5000);
+  }
+
+  async _drawTile(cam, canvas) {
+    if (!canvas) return;
+    const ctx = canvas.getContext("2d");
+    try {
+      const resp = await this._hass.fetchWithAuth(`/api/gate_vision/frame?entry_id=${encodeURIComponent(cam.entry_id)}&_=${Date.now()}`);
+      if (!resp.ok) return;
+      const blob = await resp.blob();
+      const img = new Image();
+      img.onload = () => {
+        canvas.width = img.width;
+        canvas.height = img.height;
+        ctx.drawImage(img, 0, 0);
+        const w = canvas.width, h = canvas.height;
+        const line = Math.max(2, Math.round(w / 500));
+        (cam.zones || []).forEach((z) => {
+          const st = z.state;
+          const color = z.role === "ignore" ? "#64748b" : (STATE_COLORS[st] || ROLE_COLORS[z.role] || "#fff");
+          ctx.strokeStyle = color;
+          ctx.lineWidth = line;
+          ctx.strokeRect(z.x * w, z.y * h, z.w * w, z.h * h);
+        });
+      };
+      img.src = URL.createObjectURL(blob);
+    } catch (err) { /* кадр недоступен */ }
   }
 
   _scheduleLive() {
     if (this._timer) clearInterval(this._timer);
     if (!this._live) return;
-    this._timer = setInterval(() => this._load(true, true), 5000);
+    // живое обновление: состояние и последний кадр из интеграции, БЕЗ нового запроса к камере
+    this._timer = setInterval(() => this._load(false, true), 5000);
   }
 
   /* ------------------------------------------------------------------ данные */
+  _qs(extra) {
+    const p = [];
+    if (this._activeEntry) p.push("entry_id=" + encodeURIComponent(this._activeEntry));
+    if (extra) p.push(extra);
+    return p.length ? "?" + p.join("&") : "";
+  }
+
   async _load(fresh = false, quiet = false) {
     try {
-      const q = fresh ? "?fresh=1" : "";
+      const q = this._qs(fresh ? "fresh=1" : "");
       const data = await this._hass.callApi("GET", `gate_vision/state${q}`);
       this._state = data.analysis || {};
       if (!this._dirty) this._settings = data.settings || this._settings;
@@ -259,6 +385,7 @@ class GateVisionPanel extends HTMLElement {
       const qs = new URLSearchParams();
       if (fresh) qs.set("fresh", "1");
       qs.set("_", String(Date.now()));
+      if (this._activeEntry) qs.set("entry_id", this._activeEntry);
       const resp = await this._hass.fetchWithAuth(`/api/gate_vision/frame?${qs.toString()}`);
       if (!resp.ok) return;
       const blob = await resp.blob();
@@ -277,7 +404,7 @@ class GateVisionPanel extends HTMLElement {
 
   async _test() {
     try {
-      const res = await this._hass.callApi("POST", "gate_vision/test");
+      const res = await this._hass.callApi("POST", `gate_vision/test${this._qs()}`);
       this._state = res.analysis || this._state;
       this._renderHead();
       this._draw();
@@ -289,7 +416,7 @@ class GateVisionPanel extends HTMLElement {
 
   async _save(patch) {
     try {
-      const res = await this._hass.callApi("POST", "gate_vision/settings?refresh=1", patch);
+      const res = await this._hass.callApi("POST", `gate_vision/settings${this._qs("refresh=1")}`, patch);
       this._dirty = false;
       this._settings = res.settings || this._settings;
       this._toast("Сохранено");
@@ -530,7 +657,8 @@ class GateVisionPanel extends HTMLElement {
   _renderTab() {
     const body = this._root.querySelector("#gvTabBody");
     body.innerHTML = "";
-    if (this._tab === "setup") this._renderSetup(body);
+    if (this._tab === "cams") this._renderCameras(body);
+    else if (this._tab === "setup") this._renderSetup(body);
     else if (this._tab === "reactions") this._renderReactions(body);
     else if (this._tab === "control") this._renderControl(body);
     else if (this._tab === "sched") this._renderSchedules(body);
@@ -845,7 +973,7 @@ class GateVisionPanel extends HTMLElement {
       const body = action === "reset"
         ? { zone_id: zoneId, action: "reset" }
         : { zone_id: zoneId, state, count: count || 1 };
-      const res = await this._hass.callApi("POST", "gate_vision/learn", body);
+      const res = await this._hass.callApi("POST", `gate_vision/learn${this._qs()}`, body);
       this._toast(res.message || "готово");
       await this._load(true, true);
       this._renderTab();
