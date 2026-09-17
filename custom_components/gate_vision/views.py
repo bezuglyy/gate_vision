@@ -28,6 +28,7 @@ from .const import (
     URL_STATE,
     URL_TEST,
     URL_LEARN,
+    URL_CAMERAS,
 )
 from .coordinator import GateVisionCoordinator
 from .settings import Settings
@@ -35,25 +36,47 @@ from .settings import Settings
 _LOGGER = logging.getLogger(__name__)
 
 
-def _coordinator(hass: HomeAssistant) -> GateVisionCoordinator | None:
-    entries = hass.data.get(DOMAIN, {})
-    for key, value in entries.items():
+def _all_coordinators(hass: HomeAssistant) -> dict[str, GateVisionCoordinator]:
+    """Все запущенные координаторы интеграции: entry_id -> координатор."""
+    out: dict[str, GateVisionCoordinator] = {}
+    for key, value in hass.data.get(DOMAIN, {}).items():
         if isinstance(key, str) and key.startswith("settings:"):
             continue
         if isinstance(value, GateVisionCoordinator):
-            return value
-    return None
+            out[str(key)] = value
+    return out
 
 
-def _settings(hass: HomeAssistant) -> Settings | None:
+def _coordinator(
+    hass: HomeAssistant, entry_id: str | None = None
+) -> GateVisionCoordinator | None:
+    """Координатор выбранной камеры (или первой, если не указана)."""
+    items = _all_coordinators(hass)
+    if entry_id and entry_id in items:
+        return items[entry_id]
+    return next(iter(items.values()), None)
+
+
+def _settings(hass: HomeAssistant, entry_id: str | None = None) -> Settings | None:
+    """Настройки выбранной камеры (или первой)."""
+    if entry_id:
+        store = hass.data.get(DOMAIN, {})
+        settings = store.get(f"settings:{entry_id}")
+        if isinstance(settings, Settings):
+            return settings
     for key, value in hass.data.get(DOMAIN, {}).items():
-        if (
-            isinstance(key, str)
-            and key.startswith("settings:")
-            and isinstance(value, Settings)
-        ):
+        if isinstance(key, str) and key.startswith("settings:") and isinstance(value, Settings):
             return value
     return None
+
+
+def _entry_id(request: web.Request, hass: HomeAssistant) -> str | None:
+    """entry_id из запроса или из самого координатора."""
+    entry_id = request.query.get("entry_id")
+    if entry_id:
+        return entry_id
+    coordinator = _coordinator(hass)
+    return coordinator.entry.entry_id if coordinator else None
 
 
 class GateFrameView(HomeAssistantView):
@@ -65,7 +88,7 @@ class GateFrameView(HomeAssistantView):
 
     async def get(self, request: web.Request) -> web.Response:
         hass: HomeAssistant = request.app["hass"]
-        coordinator = _coordinator(hass)
+        coordinator = _coordinator(hass, _entry_id(request, hass))
         if coordinator is None:
             return web.Response(status=404, text="gate_vision не настроен")
         if request.query.get("fresh"):
@@ -92,8 +115,8 @@ class GateStateView(HomeAssistantView):
 
     async def get(self, request: web.Request) -> web.Response:
         hass: HomeAssistant = request.app["hass"]
-        coordinator = _coordinator(hass)
-        settings = _settings(hass)
+        coordinator = _coordinator(hass, _entry_id(request, hass))
+        settings = _settings(hass, _entry_id(request, hass))
         if coordinator is None:
             return web.json_response({"error": "не настроено"}, status=404)
         if request.query.get("fresh"):
@@ -118,7 +141,8 @@ class GateSettingsView(HomeAssistantView):
     requires_auth = True
 
     async def get(self, request: web.Request) -> web.Response:
-        settings = _settings(request.app["hass"])
+        hass: HomeAssistant = request.app["hass"]
+        settings = _settings(hass, _entry_id(request, hass))
         if settings is None:
             return web.json_response({"error": "не настроено"}, status=404)
         return web.json_response(settings.as_dict())
@@ -179,7 +203,7 @@ class GateTestView(HomeAssistantView):
 
     async def post(self, request: web.Request) -> web.Response:
         hass: HomeAssistant = request.app["hass"]
-        coordinator = _coordinator(hass)
+        coordinator = _coordinator(hass, _entry_id(request, hass))
         if coordinator is None:
             return web.json_response({"error": "не настроено"}, status=404)
         try:
@@ -197,7 +221,8 @@ class GateEventsView(HomeAssistantView):
     requires_auth = True
 
     async def get(self, request: web.Request) -> web.Response:
-        coordinator = _coordinator(request.app["hass"])
+        hass: HomeAssistant = request.app["hass"]
+        coordinator = _coordinator(hass, _entry_id(request, hass))
         if coordinator is None:
             return web.json_response({"error": "не настроено"}, status=404)
         limit = int(request.query.get("limit", 50))
@@ -213,8 +238,8 @@ class GateLearnView(HomeAssistantView):
 
     async def post(self, request: web.Request) -> web.Response:
         hass: HomeAssistant = request.app["hass"]
-        settings = _settings(hass)
-        coordinator = _coordinator(hass)
+        coordinator = _coordinator(hass, _entry_id(request, hass))
+        settings = _settings(hass, _entry_id(request, hass))
         if settings is None or coordinator is None:
             return web.json_response({"error": "не настроено"}, status=404)
         try:
@@ -280,3 +305,46 @@ class GateLearnView(HomeAssistantView):
         target["samples"] = samples
         await settings.async_save({"zones": zones})
         return web.json_response({"ok": True, "message": message, "zones": settings.as_dict()["zones"]})
+
+
+class GateCamerasView(HomeAssistantView):
+    """Список всех камер интеграции (для сетки в панели)."""
+
+    url = URL_CAMERAS
+    name = f"{DOMAIN}:cameras"
+    requires_auth = True
+
+    async def get(self, request: web.Request) -> web.Response:
+        hass: HomeAssistant = request.app["hass"]
+        items = []
+        for entry_id, coordinator in _all_coordinators(hass).items():
+            data = coordinator.data or {}
+            settings = _settings(hass, entry_id)
+            items.append(
+                {
+                    "entry_id": entry_id,
+                    "title": coordinator.entry.title,
+                    "state": data.get("state"),
+                    "moving": bool(data.get("moving")),
+                    "camera_ok": data.get("camera_ok"),
+                    "frame": data.get("frame"),
+                    "reason": data.get("reason"),
+                    "has_frame": coordinator.last_frame is not None,
+                    "camera_entity": getattr(settings, "camera_entity", "") if settings else "",
+                    "zones": [
+                        {
+                            "id": z.get("id"),
+                            "name": z.get("name"),
+                            "role": z.get("role"),
+                            "x": z.get("x"),
+                            "y": z.get("y"),
+                            "w": z.get("w"),
+                            "h": z.get("h"),
+                            "state": z.get("state"),
+                        }
+                        for z in (data.get("zones") or [])
+                    ],
+                }
+            )
+        items.sort(key=lambda i: i["title"])
+        return web.json_response({"cameras": items, "count": len(items)})
