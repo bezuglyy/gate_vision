@@ -1,6 +1,6 @@
 # Обнаружение (gate_vision)
 ![Release](https://img.shields.io/github/v/release/bezuglyy/gate_vision?label=Release&style=flat-square) ![HACS](https://img.shields.io/badge/HACS-Custom%20Repository-purple?style=flat-square) ![License](https://img.shields.io/github/license/bezuglyy/gate_vision?style=flat-square) ![HA](https://img.shields.io/badge/HA-2025.1%2B-2ea44f?style=flat-square)
-Кастомная интеграция для [Home Assistant](https://www.home-assistant.io) · версия **1.5.1**.
+Кастомная интеграция для [Home Assistant](https://www.home-assistant.io) · версия **1.5.2**.
 
 📖 **Подробная инструкция: [ИНСТРУКЦИЯ.md](ИНСТРУКЦИЯ.md)**
 
@@ -9,7 +9,7 @@
 | | |
 |---|---|
 | Домен | `gate_vision` |
-| Версия | 1.5.1 |
+| Версия | 1.5.2 |
 | Тип | custom integration |
 | Тип опроса | `local_polling` |
 | Зависимости | нет (numpy и Pillow уже есть в Home Assistant) |
@@ -28,8 +28,8 @@
   не «плывёт» при смене экспозиции на рассвете/закате
 - ✅ **Точные размеры зон**: у выбранной зоны можно задать X/Y/ширину/высоту в процентах,
   двигать стрелками на кадре, а также выбирать одну или несколько зон для массовых действий
-- ✅ **Зоны детекции**: где искать признак «открыто» (низ проёма), где «закрыто» (окна полотна) и
-  что игнорировать (тележка, столб, край кадра)
+- ✅ **Зоны детекции**: где искать признак «открыто», где «закрыто», что игнорировать.
+  **Контур зоны окрашивается по состоянию: красный — открыто, зелёный — закрыто** (подписи нейтральные)
 - ✅ **Режим обучения состояний областей**: приводишь объект в состояние и нажимаешь
   «Запомнить ОТКРЫТО» / «Запомнить ЗАКРЫТО» — детектор сравнивает с обученными замерами
   (можно запомнить несколько раз: день, ночь, разное освещение — берётся ближайший)
@@ -160,7 +160,7 @@ reason: "ч/б (ИК): зона «открыто» тёмная (32 < 60) — в
 
 # Gate Vision (English)
 
-Custom [Home Assistant](https://www.home-assistant.io) integration · version **1.5.1**.
+Custom [Home Assistant](https://www.home-assistant.io) integration · version **1.5.2**.
 
 Detects the state of a **sectional / overhead garage gate from a camera** — no magnets, reed
 switches or markers. The integration reads a frame from a camera that sees the gate leaf and
