@@ -2,6 +2,8 @@
 ![Release](https://img.shields.io/github/v/release/bezuglyy/gate_vision?label=Release&style=flat-square) ![HACS](https://img.shields.io/badge/HACS-Custom%20Repository-purple?style=flat-square) ![License](https://img.shields.io/github/license/bezuglyy/gate_vision?style=flat-square) ![HA](https://img.shields.io/badge/HA-2025.1%2B-2ea44f?style=flat-square)
 Кастомная интеграция для [Home Assistant](https://www.home-assistant.io) · версия **1.5.0**.
 
+📖 **Подробная инструкция: [ИНСТРУКЦИЯ.md](ИНСТРУКЦИЯ.md)**
+
 ![icon](custom_components/gate_vision/brand/icon.png)
 
 | | |
@@ -64,7 +66,16 @@
 ### Установка
 1. Скопируйте папку `custom_components/gate_vision/` в каталог `custom_components/` конфигурации Home Assistant.
 2. Перезапустите Home Assistant.
-3. Настройки → Устройства и службы → Добавить интеграцию → **Ворота (gate-vision)**.
+3. Настройки → Устройства и службы → Добавить интеграцию → **Обнаружение**.
+
+### Быстрый старт (5 минут)
+1. Панель **«Ворота»** → вкладка **«Настройка»**.
+2. Нарисуйте зону мышью на кадре (для ворот — по окнам полотна).
+3. Приведите объект в состояние и нажмите **«Авто ЗАКРЫТО (10 замеров)»**, затем **«Авто ОТКРЫТО (10 замеров)»**.
+4. Включите **«создавать сущность»**, выберите тип (**Открыто/Закрыто** или **Включено/Выключено**) и нажмите «Сохранить зону».
+5. Готово — сущность меняет состояние вместе с объектом.
+
+Подробно — в [ИНСТРУКЦИЯ.md](ИНСТРУКЦИЯ.md).
 
 > HACS: добавьте `https://github.com/bezuglyy/gate_vision` как Custom repository (категория Integration).
 
