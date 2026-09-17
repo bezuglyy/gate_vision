@@ -1,6 +1,6 @@
 # Обнаружение (gate_vision)
 ![Release](https://img.shields.io/github/v/release/bezuglyy/gate_vision?label=Release&style=flat-square) ![HACS](https://img.shields.io/badge/HACS-Custom%20Repository-purple?style=flat-square) ![License](https://img.shields.io/github/license/bezuglyy/gate_vision?style=flat-square) ![HA](https://img.shields.io/badge/HA-2025.1%2B-2ea44f?style=flat-square)
-Кастомная интеграция для [Home Assistant](https://www.home-assistant.io) · версия **1.5.3**.
+Кастомная интеграция для [Home Assistant](https://www.home-assistant.io) · версия **1.6.0**.
 
 📖 **Подробная инструкция: [ИНСТРУКЦИЯ.md](ИНСТРУКЦИЯ.md)**
 
@@ -9,7 +9,7 @@
 | | |
 |---|---|
 | Домен | `gate_vision` |
-| Версия | 1.5.3 |
+| Версия | 1.6.0 |
 | Тип | custom integration |
 | Тип опроса | `local_polling` |
 | Зависимости | нет (numpy и Pillow уже есть в Home Assistant) |
@@ -51,7 +51,10 @@
   RTSP-адрес / имя потока go2rtc / готовый URL
 - ✅ **Получатели выбираются из списка**, а не вписываются руками: службы `notify.*`, сущности
   `tts.*`, `media_player.*`, `script.*` / `automation.*` / `scene.*`, реле `switch.*`
-- ✅ **Веб-панель «Ворота»** в боковом меню: живой кадр, рисование зон мышью, пороги с моментальным
+- ✅ **Несколько камер**: каждая камера — отдельная запись интеграции; в панели вкладка **«Камеры»**
+  показывает их **сеткой** (1–4 колонки) с состоянием, зонами и живым кадром; клик по плитке делает
+  камеру активной для настройки и обучения
+- ✅ **Веб-панель** в боковом меню: живой кадр, рисование зон мышью, пороги с моментальным
   применением, журнал событий
 - ✅ **Реагирования на события**: открылись, закрылись, оставлены открытыми, движение полотна,
   состояние не определяется, камера недоступна/вернулась. Каналы: push (`notify.*`), уведомление в HA,
@@ -160,7 +163,7 @@ reason: "ч/б (ИК): зона «открыто» тёмная (32 < 60) — в
 
 # Gate Vision (English)
 
-Custom [Home Assistant](https://www.home-assistant.io) integration · version **1.5.3**.
+Custom [Home Assistant](https://www.home-assistant.io) integration · version **1.6.0**.
 
 Detects the state of a **sectional / overhead garage gate from a camera** — no magnets, reed
 switches or markers. The integration reads a frame from a camera that sees the gate leaf and
