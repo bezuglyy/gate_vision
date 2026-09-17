@@ -14,7 +14,8 @@
       }
     },
     "error": {
-      "cannot_connect": "Cannot fetch a frame from the camera. Check the address, credentials and go2rtc availability."
+      "cannot_connect": "Cannot fetch a frame from the camera. Check the address, credentials and go2rtc availability.",
+      "no_source": "Pick a Home Assistant camera or provide a frame source (RTSP / stream name / URL)."
     },
     "abort": {
       "already_configured": "This camera is already configured."
