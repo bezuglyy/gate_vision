@@ -39,6 +39,37 @@ from .detector import analyze
 _LOGGER = logging.getLogger(__name__)
 
 
+async def _check_source(
+    hass, camera_entity: str, snapshot_url: str, go2rtc_base: str
+) -> dict[str, Any] | None:
+    """Проверить источник кадра: сущность camera.* (приоритет) или URL/поток.
+
+    Возвращает результат анализа кадра или None, если источник не читается.
+    """
+    if camera_entity:
+        try:
+            from homeassistant.components import camera as camera_component
+
+            image = await camera_component.async_get_image(hass, camera_entity, timeout=15)
+            raw = getattr(image, "content", b"") or b""
+            if len(raw) < 5000:
+                _LOGGER.warning(
+                    "gate_vision: камера %s вернула пустой кадр (%s байт)", camera_entity, len(raw)
+                )
+                return None
+            img = await hass.async_add_executor_job(
+                lambda: Image.open(io.BytesIO(raw)).convert("RGB")
+            )
+            return await hass.async_add_executor_job(analyze, img, None)
+        except Exception as err:  # noqa: BLE001
+            _LOGGER.warning("gate_vision: камера %s не проверена: %s", camera_entity, err)
+            return None
+    if not (snapshot_url or "").strip():
+        _LOGGER.warning("gate_vision: не указаны ни камера, ни адрес кадра")
+        return None
+    return await _check_camera(hass, snapshot_url, go2rtc_base)
+
+
 async def _check_camera(
     hass, snapshot_url: str, go2rtc_base: str
 ) -> dict[str, Any] | None:
@@ -80,7 +111,7 @@ def _schema(defaults: dict[str, Any]) -> vol.Schema:
                 CONF_CAMERA_ENTITY, default=defaults.get(CONF_CAMERA_ENTITY, "")
             ): selector.EntitySelector(selector.EntitySelectorConfig(domain="camera")),
             vol.Optional(
-                CONF_SNAPSHOT_URL, default=defaults.get(CONF_SNAPSHOT_URL, DEFAULT_RTSP)
+                CONF_SNAPSHOT_URL, default=defaults.get(CONF_SNAPSHOT_URL, "")
             ): selector.TextSelector(),
             vol.Optional(
                 CONF_GO2RTC_BASE,
@@ -124,7 +155,12 @@ class GateVisionConfigFlow(ConfigFlow, domain=DOMAIN):
                 user_input.get(CONF_GO2RTC_BASE, DEFAULT_GO2RTC_BASE),
             )
             if result is None:
-                errors["base"] = "cannot_connect"
+                errors["base"] = (
+                    "no_source"
+                    if not (user_input.get(CONF_CAMERA_ENTITY) or "").strip()
+                    and not (user_input.get(CONF_SNAPSHOT_URL) or "").strip()
+                    else "cannot_connect"
+                )
             else:
                 return self.async_create_entry(title=name, data=user_input)
         return self.async_show_form(
