@@ -769,6 +769,13 @@ class GateVisionPanel extends HTMLElement {
         <label>Длительность нажатия, мс</label><input type="number" data-f="impulse_ms" value="${c.impulse_ms || 800}"></div>
       <div class="gv-row"><label>Ожидание подтверждения, с</label><input type="number" data-f="confirm_timeout" value="${c.confirm_timeout || 45}"></div>
       <div class="gv-row"><label><input type="checkbox" data-f="check_clear_before_close" ${c.check_clear_before_close ? "checked" : ""}> Перед закрытием проверять камеру</label></div>
+      <div class="gv-row" style="gap:8px;align-items:center">
+        <b>Команды</b>
+        <span class="gv-meta" id="gvCtrlState">${this._state ? (this._state.state || "") : ""}</span>
+        <button class="gv-btn" id="gvOpen" ${this._state && this._state.control_enabled ? "" : "disabled"}>Открыть</button>
+        <button class="gv-btn" id="gvClose" ${this._state && this._state.control_enabled ? "" : "disabled"}>Закрыть</button>
+        <button class="gv-btn" id="gvStop" ${this._state && this._state.control_enabled ? "" : "disabled"}>Стоп</button>
+      </div>
       <div class="gv-hint">Пока управление выключено, сущность cover не создаётся — интеграция только читает состояние.
       У <b>импульсного</b> реле длительность задаётся в самом реле, поэтому время нажатия не спрашивается.
       У <b>постоянного</b> реле ворот держим его заданное время и отпускаем.</div>
@@ -786,6 +793,20 @@ class GateVisionPanel extends HTMLElement {
       });
       this._save({ control: patch });
     };
+
+    // --- команды воротам (cover этой записи) ---
+    const coverEntity = (this._state && this._state.cover_entity) || null;
+    const cmd = (service, btn) => {
+      if (!coverEntity) { alert("Управление выключено или cover ещё не создан"); return; }
+      if (btn) { btn.disabled = true; setTimeout(() => { btn.disabled = false; }, 4000); }
+      this._hass.callService("cover", service, { entity_id: coverEntity });
+    };
+    const bOpen = wrap.querySelector("#gvOpen");
+    const bClose = wrap.querySelector("#gvClose");
+    const bStop = wrap.querySelector("#gvStop");
+    if (bOpen) bOpen.onclick = () => cmd("open_cover", bOpen);
+    if (bClose) bClose.onclick = () => cmd("close_cover", bClose);
+    if (bStop) bStop.onclick = () => cmd("stop_cover", bStop);
     host.appendChild(wrap);
   }
 
@@ -1111,6 +1132,23 @@ class GateVisionPanel extends HTMLElement {
     host.appendChild(wrap);
   }
 
+  /* время события в местной зоне (раньше в журнале был UTC) */
+
+  _fmtTime(ts) {
+
+    if (!ts) return "";
+
+    const d = new Date(ts);
+
+    if (isNaN(d.getTime())) return String(ts).replace("T", " ").slice(0, 19);
+
+    const p = (n) => String(n).padStart(2, "0");
+
+    return `${p(d.getDate())}.${p(d.getMonth() + 1)} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+
+  }
+
+
   _renderLog(host) {
     const wrap = document.createElement("div");
     wrap.className = "gv-log";
@@ -1118,7 +1156,7 @@ class GateVisionPanel extends HTMLElement {
     if (!events.length) wrap.textContent = "Пока событий нет";
     events.forEach((e) => {
       const div = document.createElement("div");
-      const time = (e.ts || "").replace("T", " ").slice(0, 19);
+      const time = this._fmtTime(e.ts);
       div.innerHTML = `<b>${time}</b> — ${e.event || ""} <span class="gv-meta">${e.reason || ""}</span>`;
       wrap.appendChild(div);
     });
