@@ -5,7 +5,7 @@ from __future__ import annotations
 DOMAIN = "gate_vision"
 NAME = "Обнаружение"
 MANUFACTURER = "techlan.su"
-VERSION = "1.0.0"
+VERSION = "1.6.1"
 
 # --- ключи настроек (config entry data/options) ---
 CONF_CAMERA_ENTITY = "camera_entity"
