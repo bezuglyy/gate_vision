@@ -70,6 +70,18 @@ def _settings(hass: HomeAssistant, entry_id: str | None = None) -> Settings | No
     return None
 
 
+def _cover_entity(hass: HomeAssistant, entry_id: str | None) -> str | None:
+    """entity_id сущности cover этой записи (по unique_id ``<entry_id>_cover``)."""
+    if not entry_id:
+        return None
+    try:
+        from homeassistant.helpers import entity_registry as er
+
+        reg = er.async_get(hass)
+        return reg.async_get_entity_id("cover", DOMAIN, f"{entry_id}_cover")
+    except Exception:  # noqa: BLE001
+        return None
+
 def _entry_id(request: web.Request, hass: HomeAssistant) -> str | None:
     """entry_id из запроса или из самого координатора."""
     entry_id = request.query.get("entry_id")
@@ -124,11 +136,16 @@ class GateStateView(HomeAssistantView):
                 await coordinator.async_request_refresh()
             except Exception as err:  # noqa: BLE001
                 _LOGGER.debug("gate_vision: обновление не удалось: %s", err)
+        entry_id = _entry_id(request, hass)
         payload = {
             "state": (coordinator.data or {}).get("state"),
             "analysis": coordinator.data or {},
             "settings": settings.as_dict() if settings else {},
             "event_log": list(coordinator.event_log)[-50:],
+            "cover_entity": _cover_entity(hass, entry_id),
+            "control_enabled": bool(
+                settings and settings.control.get("enabled")
+            ),
         }
         return web.json_response(payload)
 
@@ -331,6 +348,8 @@ class GateCamerasView(HomeAssistantView):
                     "reason": data.get("reason"),
                     "has_frame": coordinator.last_frame is not None,
                     "camera_entity": getattr(settings, "camera_entity", "") if settings else "",
+                    "cover_entity": _cover_entity(hass, entry_id),
+                    "control_enabled": bool(settings and settings.control.get("enabled")),
                     "zones": [
                         {
                             "id": z.get("id"),
