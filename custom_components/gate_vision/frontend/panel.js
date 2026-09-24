@@ -54,6 +54,7 @@ class GateVisionPanel extends HTMLElement {
     this._selectedZone = null;
     this._drag = null;
     this._newRole = "open";
+    this._zoneAddMode = false;   // рисование новой зоны только после кнопки «Добавить зону»
     this._dirty = false;
     this._zoneSaveTimer = null;
     this._cams = [];
@@ -136,6 +137,11 @@ class GateVisionPanel extends HTMLElement {
         .gv-chk { display:inline-flex; align-items:center; gap:6px; white-space:nowrap; font-size:13px; }
         .gv-chk input[type=checkbox] { width:auto; margin:0; }
         .gv-int-grid .gv-row { margin:0; }
+        .gv-modal { position:fixed; inset:0; background:rgba(0,0,0,.55); display:flex; align-items:center; justify-content:center; z-index:99; }
+        .gv-modal-box { background:var(--card-background-color); border:1px solid var(--divider-color); border-radius:10px;
+          padding:14px; width:min(430px,92vw); max-height:90vh; overflow:auto; box-sizing:border-box; }
+        .gv-modal-box .gv-int-grid { grid-template-columns:110px minmax(0,1fr); }
+        .gv-modal-box input, .gv-modal-box select { font-size:13px; }
         .gv-head-row { display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin:0 0 8px; }
         .gv-ev { box-sizing:border-box; max-width:100%; overflow-wrap:anywhere; }
         .gv-actions { display:flex; flex-wrap:wrap; gap:4px 12px; grid-column:1/-1; }
@@ -186,7 +192,8 @@ class GateVisionPanel extends HTMLElement {
               <option value="closed">Закрыто / Выключено</option>
               <option value="ignore">Исключение</option>
             </select>
-            <span class="gv-hint">ЛКМ по пустому месту — нарисовать; тянуть — сдвинуть; угол — изменить размер</span>
+            <button class="gv-btn" id="gvZoneAdd" title="Включить режим рисования: следующая зона — по клику на кадре">＋ Добавить зону</button>
+            <span class="gv-hint" id="gvZoneHint">Нажмите «＋ Добавить зону», затем кликните по кадру. Тянуть — сдвинуть, угол — изменить размер.</span>
             <div style="flex:1 1 auto"></div>
             <button class="gv-btn secondary" id="gvZonesDefault">Зоны по умолчанию</button>
             <button class="gv-btn" id="gvSaveZones">Сохранить зоны</button>
@@ -230,7 +237,11 @@ class GateVisionPanel extends HTMLElement {
     };
     this._root.querySelector("#gvNewRole").onchange = (e) => { this._newRole = e.target.value; };
     this._root.querySelector("#gvSaveZones").onclick = () => this._save({ zones: this._settings.zones });
-    this._root.querySelector("#gvZonesDefault").onclick = () => this._loadDefaults();
+    this._root.querySelector("#gvZoneAdd").onclick = () => this._toggleZoneAddMode();
+    this._root.querySelector("#gvZonesDefault").onclick = () => {
+      if (!window.confirm("Заменить текущие зоны зоной по умолчанию «Открыто (низ проёма)»?")) return;
+      this._loadDefaults();
+    };
     this._root.querySelectorAll(".gv-tab").forEach((el) => {
       el.onclick = () => {
         if (this._tileTimer && el.dataset.tab !== "cams") { clearInterval(this._tileTimer); this._tileTimer = null; }
@@ -576,6 +587,7 @@ class GateVisionPanel extends HTMLElement {
     };
     bar.querySelector("#gvBulkDel").onclick = () => {
       if (!sel.size) return;
+      if (!window.confirm(`Удалить выбранные зоны (${sel.size})? Действие нельзя отменить.`)) return;
       this._settings.zones = zones.filter((z) => !sel.has(z.id));
       sel.clear();
       this._selectedZone = null;
@@ -601,6 +613,7 @@ class GateVisionPanel extends HTMLElement {
         <span class="gv-meta" style="white-space:nowrap;color:${dotColor}">${zState ? (STATE_TITLES[zState] || "") : ""}</span>
         <select>${Object.keys(ROLE_TITLES).map((r) =>
           `<option value="${r}" ${r === z.role ? "selected" : ""}>${ROLE_TITLES[r]}</option>`).join("")}</select>
+        <button class="gv-btn secondary" style="padding:4px 9px" title="редактировать зону">✎</button>
         <button class="gv-btn danger" style="padding:4px 9px" title="удалить зону">✕</button>`;
       row.onclick = (e) => {
         if (["BUTTON", "INPUT", "SELECT"].includes(e.target.tagName)) return;
@@ -624,7 +637,10 @@ class GateVisionPanel extends HTMLElement {
         this._renderZoneList();
         this._draw();
       };
-      row.querySelector("button").onclick = () => {
+      const btns = row.querySelectorAll("button");
+      row.querySelector("button.gv-btn.secondary")?.addEventListener("click", () => this._openZoneEditor(z));
+      btns[btns.length - 1].onclick = () => {
+        if (!window.confirm(`Удалить зону «${z.name}»?`)) return;
         this._settings.zones = zones.filter((x) => x.id !== z.id);
         sel.delete(z.id);
         this._selectedZone = null;
@@ -665,6 +681,84 @@ class GateVisionPanel extends HTMLElement {
       });
       host.appendChild(box);
     }
+  }
+
+  _openZoneEditor(zone) {
+    this._root.querySelector(".gv-modal")?.remove();
+    this._selectedZone = zone.id;
+    this._renderZoneList();
+    this._draw();
+    const snap = { ...zone };
+    const num = (v) => (v * 100).toFixed(1);
+    const modal = document.createElement("div");
+    modal.className = "gv-modal";
+    modal.innerHTML = `
+      <div class="gv-modal-box">
+        <div class="gv-head-row">
+          <b style="flex:1 1 120px;font-size:14px">Редактирование зоны</b>
+          <button class="gv-btn secondary" id="gvZmX" style="padding:4px 10px" title="закрыть">✕</button>
+        </div>
+        <div class="gv-int-grid">
+          <label>Название</label>
+          <input id="gvZmName" value="${String(zone.name || "").replace(/"/g, "&quot;")}">
+          <label>Роль</label>
+          <select id="gvZmRole">
+            ${Object.keys(ROLE_TITLES).map((r) => `<option value="${r}" ${r === zone.role ? "selected" : ""}>${ROLE_TITLES[r]}</option>`).join("")}
+          </select>
+          <label>X, %</label><input id="gvZmPx" type="number" step="0.5" min="0" max="100" value="${num(zone.x)}">
+          <label>Y, %</label><input id="gvZmPy" type="number" step="0.5" min="0" max="100" value="${num(zone.y)}">
+          <label>Ширина, %</label><input id="gvZmPw" type="number" step="0.5" min="0.5" max="100" value="${num(zone.w)}">
+          <label>Высота, %</label><input id="gvZmPh" type="number" step="0.5" min="0.5" max="100" value="${num(zone.h)}">
+        </div>
+        <div class="gv-hint">Зону можно тянуть и на кадре; здесь удобно задать точно. Стрелки на кадре двигают выбранную зону (с Shift — мелким шагом).</div>
+        <div class="gv-row" style="margin-top:10px;gap:8px">
+          <button class="gv-btn" id="gvZmSave">Сохранить</button>
+          <button class="gv-btn secondary" id="gvZmCancel">Отмена</button>
+          <button class="gv-btn danger" id="gvZmDel">Удалить зону</button>
+        </div>
+      </div>`;
+    this._root.appendChild(modal);
+    const close = () => modal.remove();
+    const apply = (rerender = false) => {
+      this._dirty = true;
+      this._scheduleZoneSave();
+      if (rerender) this._renderZoneList();
+      this._draw();
+    };
+    modal.querySelector("#gvZmX").onclick = close;
+    modal.querySelector("#gvZmCancel").onclick = () => {
+      Object.assign(zone, snap);
+      this._dirty = true;
+      this._scheduleZoneSave();
+      this._renderZoneList();
+      this._draw();
+      close();
+    };
+    modal.querySelector("#gvZmName").oninput = (e) => { zone.name = e.target.value; apply(); };
+    modal.querySelector("#gvZmRole").onchange = (e) => { zone.role = e.target.value; apply(true); };
+    const bindNum = (id, key) => {
+      modal.querySelector(id).onchange = (e) => {
+        const v = Math.max(0, Math.min(100, parseFloat(e.target.value || "0"))) / 100;
+        if (key === "x") zone.x = Math.min(1 - zone.w, v);
+        else if (key === "y") zone.y = Math.min(1 - zone.h, v);
+        else if (key === "w") zone.w = Math.max(0.005, Math.min(1 - zone.x, v));
+        else zone.h = Math.max(0.005, Math.min(1 - zone.y, v));
+        apply();
+      };
+    };
+    bindNum("#gvZmPx", "x"); bindNum("#gvZmPy", "y"); bindNum("#gvZmPw", "w"); bindNum("#gvZmPh", "h");
+    modal.querySelector("#gvZmSave").onclick = () => { apply(true); close(); this._toast("Зона сохранена"); };
+    modal.querySelector("#gvZmDel").onclick = () => {
+      if (!window.confirm(`Удалить зону «${zone.name}»?`)) return;
+      this._settings.zones = (this._settings.zones || []).filter((z) => z.id !== zone.id);
+      (this._zoneSelection || new Set()).delete(zone.id);
+      this._selectedZone = null;
+      this._dirty = true;
+      this._scheduleZoneSave();
+      this._renderZoneList();
+      this._draw();
+      close();
+    };
   }
 
   _renderTab() {
@@ -1361,6 +1455,22 @@ class GateVisionPanel extends HTMLElement {
     return null;
   }
 
+  _toggleZoneAddMode(on) {
+    this._zoneAddMode = (typeof on === "boolean") ? on : !this._zoneAddMode;
+    const btn = this._root.querySelector("#gvZoneAdd");
+    const hint = this._root.querySelector("#gvZoneHint");
+    if (btn) {
+      btn.classList.toggle("danger", this._zoneAddMode);
+      btn.textContent = this._zoneAddMode ? "✕ Отменить добавление" : "＋ Добавить зону";
+    }
+    if (hint) {
+      hint.innerHTML = this._zoneAddMode
+        ? "<b>Кликните по кадру</b> — зона появится в этом месте (тянуть сразу можно). Роль берётся из списка «Добавить зону»."
+        : "Нажмите «＋ Добавить зону», затем кликните по кадру. Тянуть — сдвинуть, угол — изменить размер.";
+    }
+    if (this._canvas) this._canvas.style.cursor = this._zoneAddMode ? "crosshair" : "default";
+  }
+
   _onPointerDown(e) {
     if (!this._settings) return;
     const p = this._pos(e);
@@ -1372,13 +1482,18 @@ class GateVisionPanel extends HTMLElement {
         if (sel.has(hit.zone.id)) sel.delete(hit.zone.id); else sel.add(hit.zone.id);
       }
       this._drag = { zone: hit.zone, resize: hit.resize, start: p, orig: { ...hit.zone } };
-    } else {
+    } else if (this._zoneAddMode) {
+      // новая зона — только после кнопки «＋ Добавить зону»
       const id = `z${Date.now().toString().slice(-6)}`;
       const zone = { id, name: `Зона ${id}`, role: this._newRole, x: p.x, y: p.y, w: 0.05, h: 0.05 };
       this._settings.zones = [...(this._settings.zones || []), zone];
       this._selectedZone = id;
       this._drag = { zone, resize: true, start: p, orig: { ...zone } };
       this._dirty = true;
+      this._toggleZoneAddMode(false);   // режим одноразовый
+    } else {
+      // клик по пустому месту — просто снять выделение
+      this._selectedZone = null;
     }
     this._renderZoneList();
     this._draw();
