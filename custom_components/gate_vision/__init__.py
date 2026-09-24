@@ -24,6 +24,7 @@ from .settings import get_settings
 from .views import (
     GateCamerasView,
     GateEventsView,
+    GateInterlocksView,
     GateFrameView,
     GateLearnView,
     GateSettingsView,
@@ -74,6 +75,7 @@ async def _async_register_http(hass: HomeAssistant) -> None:
         GateFrameView(),
         GateStateView(),
         GateSettingsView(),
+        GateInterlocksView(),
         GateTestView(),
         GateEventsView(),
         GateLearnView(),
