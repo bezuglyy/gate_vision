@@ -13,10 +13,12 @@ from typing import Any
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 
+from .interlocks import normalize_interlocks
 from .const import (
     CONF_CAMERA_ENTITY,
     CONF_SCHEDULES,
     CONF_CONTROL,
+    CONF_INTERLOCKS,
     DEFAULT_ZONES,
     KIND_OPEN_CLOSED,
     MAX_SAMPLES,
@@ -148,6 +150,10 @@ class Settings:
             normalize_schedule(item, i + 1) for i, item in enumerate(raw_schedules) if isinstance(item, dict)
         ]
 
+        self.interlocks: list[dict[str, Any]] = normalize_interlocks(
+            merged.get(CONF_INTERLOCKS)
+        )
+
         self.learn_mode: bool = bool(merged.get(CONF_LEARN_MODE, False))
         self.left_open_min: int = int(
             merged.get("left_open_min", DEFAULT_LEFT_OPEN_MIN)
@@ -186,6 +192,8 @@ class Settings:
                 options[CONF_SCHEDULES] = [
                     normalize_schedule(item, i + 1) for i, item in enumerate(value) if isinstance(item, dict)
                 ]
+            elif key == CONF_INTERLOCKS and isinstance(value, list):
+                options[CONF_INTERLOCKS] = normalize_interlocks(value)
             elif key == CONF_CONTROL and isinstance(value, dict):
                 control = dict(self.control)
                 control.update(value)
@@ -209,6 +217,7 @@ class Settings:
             "reactions": self.reactions,
             "control": self.control,
             "schedules": self.schedules,
+            "interlocks": self.interlocks,
             "learn_mode": self.learn_mode,
             "left_open_min": self.left_open_min,
         }
