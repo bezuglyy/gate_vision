@@ -5,7 +5,7 @@ from __future__ import annotations
 DOMAIN = "gate_vision"
 NAME = "Обнаружение"
 MANUFACTURER = "techlan.su"
-VERSION = "1.6.1"
+VERSION = "1.7.0"
 
 # --- ключи настроек (config entry data/options) ---
 CONF_CAMERA_ENTITY = "camera_entity"
@@ -18,6 +18,7 @@ CONF_REACTIONS = "reactions"
 CONF_CONTROL = "control"
 CONF_SCHEDULES = "schedules"
 CONF_LEARN_MODE = "learn_mode"
+CONF_INTERLOCKS = "interlocks"
 
 DEFAULT_GO2RTC_BASE = "http://127.0.0.1:1984"
 DEFAULT_SCAN_INTERVAL = 5
@@ -98,6 +99,7 @@ EVENT_CAMERA_LOST = "camera_lost"
 EVENT_CAMERA_BACK = "camera_back"
 EVENT_SCHEDULE = "schedule"
 EVENT_SCHEDULE_UNCONFIRMED = "schedule_unconfirmed"
+EVENT_SCHEDULE_BLOCKED = "schedule_blocked"
 
 # --- действия расписаний ---
 ACTION_IMPULSE = "impulse"  # просто импульс
@@ -172,6 +174,32 @@ DEFAULT_CONTROL: dict[str, object] = {
     "check_clear_before_close": True,  # перед закрытием проверять, что проём пуст
 }
 
+# --- запреты по сенсорам (interlocks) ---
+# Условие правила: сравнение значения сенсора с порогом.
+INTERLOCK_OPS: dict[str, str] = {
+    "above": "больше",
+    "below": "меньше",
+    "equal": "равно",
+    "not_equal": "не равно",
+    "is_on": "включён",
+    "is_off": "выключен",
+}
+# Какие команды может запрещать правило (пусто = все).
+INTERLOCK_ACTIONS: dict[str, str] = {
+    "open": "открыть",
+    "close": "закрыть",
+    "stop": "стоп",
+    "impulse": "импульс (расписание)",
+}
+INTERLOCK_MODES: dict[str, str] = {
+    "block": "запрещать",
+    "warn": "только предупреждать",
+}
+DEFAULT_INTERLOCKS: list[dict] = []
+# Состояния, которые считаем «включено»/«выключено» для is_on/is_off.
+ISH_ON_STATES = {"on", "true", "1", "yes", "home", "open", "opened", "открыто", "включено"}
+IS_OFF_STATES = {"off", "false", "0", "no", "not_home", "closed", "закрыто", "выключено"}
+
 # --- HTTP/панель ---
 URL_STATIC = f"/{DOMAIN}_static"
 URL_FRAME = f"/api/{DOMAIN}/frame"
@@ -181,6 +209,7 @@ URL_TEST = f"/api/{DOMAIN}/test"
 URL_LEARN = f"/api/{DOMAIN}/learn"
 URL_EVENTS = f"/api/{DOMAIN}/events"
 URL_CAMERAS = f"/api/{DOMAIN}/cameras"
+URL_INTERLOCKS = f"/api/{DOMAIN}/interlocks"
 PANEL_URL = "gate-vision"
 PANEL_TITLE = "Ворота"
 PANEL_ICON = "mdi:garage-variant"
