@@ -27,8 +27,10 @@ from .const import (
     STATE_CLOSED,
     STATE_OPEN,
     STATE_UNKNOWN,
+    EVENT_SCHEDULE_BLOCKED,
 )
 from .relay import async_relay_pulse
+from .interlocks import async_check
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -157,6 +159,31 @@ class ScheduleRunner:
         if action == ACTION_STOP and not moving:
             await self._log_skip(item, "ворота не движутся")
             return
+        blocking, warning = await async_check(
+            self.hass, self.coordinator.settings, action
+        )
+        for item in warning:
+            self._entry(
+                item,
+                f"предупреждение запрета — {item['text']}",
+                state,
+                action,
+                event=EVENT_SCHEDULE_BLOCKED,
+            )
+        if blocking:
+            await self._log_skip(
+                item,
+                "запрет: " + "; ".join(b["text"] for b in blocking),
+            )
+            self._entry(
+                item,
+                "запрет: " + "; ".join(b["text"] for b in blocking),
+                state,
+                action,
+                event=EVENT_SCHEDULE_BLOCKED,
+            )
+            return
+
         if action in (ACTION_OPEN, ACTION_CLOSE, ACTION_STOP) and state == STATE_UNKNOWN:
             await self._log_skip(item, "состояние неизвестно")
             return
