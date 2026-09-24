@@ -47,6 +47,7 @@ class GateVisionPanel extends HTMLElement {
     this._tab = "cams";
     this._state = null;
     this._settings = null;
+    this._interlocks = null;
     this._frameUrl = null;
     this._live = true;
     this._timer = null;
@@ -188,6 +189,7 @@ class GateVisionPanel extends HTMLElement {
             <div class="gv-tab" data-tab="setup">Настройка</div>
             <div class="gv-tab" data-tab="reactions">Реагирования</div>
             <div class="gv-tab" data-tab="control">Управление</div>
+            <div class="gv-tab" data-tab="interlocks">Запреты</div>
             <div class="gv-tab" data-tab="sched">Расписания</div>
             <div class="gv-tab" data-tab="log">Журнал</div>
           </div>
@@ -370,6 +372,7 @@ class GateVisionPanel extends HTMLElement {
       this._state = data.analysis || {};
       if (!this._dirty) this._settings = data.settings || this._settings;
       else if (data.settings) this._serverSettings = data.settings;
+      this._interlocks = data.interlocks || this._interlocks;
       this._log = data.event_log || this._log;
       await this._loadFrame(fresh);
       this._renderHead();
@@ -661,6 +664,7 @@ class GateVisionPanel extends HTMLElement {
     else if (this._tab === "setup") this._renderSetup(body);
     else if (this._tab === "reactions") this._renderReactions(body);
     else if (this._tab === "control") this._renderControl(body);
+    else if (this._tab === "interlocks") this._renderInterlocks(body);
     else if (this._tab === "sched") this._renderSchedules(body);
     else this._renderLog(body);
     this._renderZoneList();
@@ -1003,6 +1007,134 @@ class GateVisionPanel extends HTMLElement {
     }
   }
 
+
+
+  /* ------------------------------------------------------------------ запреты по сенсорам */
+  _renderInterlocks(host) {
+    const ops = [
+      ["below", "меньше"], ["above", "больше"], ["equal", "равно"], ["not_equal", "не равно"],
+      ["is_on", "включён"], ["is_off", "выключен"],
+    ];
+    const acts = [["open", "Открыть"], ["close", "Закрыть"], ["stop", "Стоп"], ["impulse", "Импульс (расписание)"]];
+    const numeric = (op) => ["above", "below", "equal", "not_equal"].includes(op);
+    const rules = JSON.parse(JSON.stringify(this._settings?.interlocks || []));
+    const activeAll = (this._interlocks?.active || []);
+    const sensors = this._entities(["sensor", "binary_sensor", "input_number", "input_boolean", "number"]);
+
+    const hint = document.createElement("div");
+    hint.className = "gv-hint";
+    hint.innerHTML = "<b>Запрет по сенсору:</b> пока условие на сенсоре выполнено, выбранные команды " +
+      "не выполняются (<b>запрещать</b>) или выполняются с предупреждением в журнале (<b>только предупреждать</b>). " +
+      "Пример: «Уличная температура меньше −25 → запретить закрытие». Недоступный сенсор запретом не считается.";
+    host.appendChild(hint);
+
+    const list = document.createElement("div");
+    host.appendChild(list);
+
+    rules.forEach((rule, i) => {
+      rule.op = rule.op || "below";
+      rule.mode = rule.mode || "block";
+      rule.actions = Array.isArray(rule.actions) ? rule.actions : [];
+      rule.enabled = rule.enabled !== false;
+      const card = document.createElement("div");
+      card.className = "gv-ev";
+      card.style.marginBottom = "10px";
+      const st = this._hass?.states?.[rule.entity_id];
+      const current = st ? st.state : "—";
+      const isActive = activeAll.some((a) => a.id === rule.id);
+      card.innerHTML = `
+        <div class="gv-row" style="margin:0 0 6px">
+          <label style="min-width:auto">Правило ${i + 1}</label>
+          <input class="gv-inp gv-name" style="flex:1" value="${(rule.name || "").replace(/"/g, "&quot;")}" placeholder="название (например «Мороз: не закрывать»)">
+          ${rule.enabled ? "" : '<span class="gv-badge" style="background:#64748b;color:#fff">выключено</span>'}
+          ${isActive ? `<span class="gv-badge" style="background:${rule.mode === "warn" ? "#d97706" : "#b91c1c"};color:#fff">сейчас ${rule.mode === "warn" ? "предупреждает" : "блокирует"}</span>` : ""}
+          <label class="gv-chk" title="правило включено"><input type="checkbox" class="gv-en" ${rule.enabled ? "checked" : ""}> вкл</label>
+          <button class="gv-btn secondary gv-del" title="удалить правило">✕</button>
+        </div>
+        <div class="gv-row">
+          <label>Сенсор</label>
+          <input class="gv-inp gv-ent" style="flex:1" list="gvSensors" value="${rule.entity_id || ""}" placeholder="sensor.temperatura">
+          <span class="gv-meta">сейчас: <b>${current}</b></span>
+        </div>
+        <div class="gv-row">
+          <label>Атрибут</label>
+          <input class="gv-inp gv-attr" style="width:160px" value="${rule.attribute || ""}" placeholder="(пусто — состояние)">
+          <label>Условие</label>
+          <select class="gv-inp gv-op">${ops.map(([v, t]) => `<option value="${v}" ${v === rule.op ? "selected" : ""}>${t}</option>`).join("")}</select>
+          <input class="gv-inp gv-val" type="number" step="any" style="width:110px" value="${rule.value ?? 0}" ${numeric(rule.op) ? "" : "disabled"}>
+          <label>Режим</label>
+          <select class="gv-inp gv-mode">
+            <option value="block" ${rule.mode === "block" ? "selected" : ""}>запрещать</option>
+            <option value="warn" ${rule.mode === "warn" ? "selected" : ""}>только предупреждать</option>
+          </select>
+        </div>
+        <div class="gv-row">
+          <label>Запрещать команды</label>
+          ${acts.map(([v, t]) => `<label class="gv-chk"><input type="checkbox" class="gv-act" data-act="${v}" ${rule.actions.includes(v) ? "checked" : ""}> ${t}</label>`).join("")}
+          <span class="gv-meta">ничего не отмечено = все команды</span>
+        </div>`;
+      list.appendChild(card);
+
+      const upd = () => { this._dirty = true; };
+      card.querySelector(".gv-name").oninput = (e) => { rule.name = e.target.value; upd(); };
+      card.querySelector(".gv-ent").onchange = (e) => { rule.entity_id = e.target.value.trim(); upd(); };
+      card.querySelector(".gv-attr").oninput = (e) => { rule.attribute = e.target.value.trim(); upd(); };
+      card.querySelector(".gv-op").onchange = (e) => {
+        rule.op = e.target.value; upd();
+        card.querySelector(".gv-val").disabled = !numeric(rule.op);
+      };
+      card.querySelector(".gv-val").oninput = (e) => { rule.value = parseFloat(e.target.value) || 0; upd(); };
+      card.querySelector(".gv-mode").onchange = (e) => { rule.mode = e.target.value; upd(); };
+      card.querySelector(".gv-en").onchange = (e) => { rule.enabled = e.target.checked; upd(); };
+      card.querySelectorAll(".gv-act").forEach((cb) => {
+        cb.onchange = () => {
+          rule.actions = Array.from(card.querySelectorAll(".gv-act")).filter((x) => x.checked).map((x) => x.dataset.act);
+          upd();
+        };
+      });
+      card.querySelector(".gv-del").onclick = () => {
+        rules.splice(i, 1);
+        this._save({ interlocks: rules });
+      };
+    });
+
+    host.appendChild(this._datalistHtml("gvSensors", sensors));
+
+    if (!rules.length) {
+      const empty = document.createElement("div");
+      empty.className = "gv-hint";
+      empty.textContent = "Правил пока нет — нажмите «Добавить правило».";
+      host.appendChild(empty);
+    }
+
+    const bar = document.createElement("div");
+    bar.className = "gv-row";
+    bar.style.marginTop = "8px";
+    bar.innerHTML = `<button class="gv-btn secondary" id="gvIlAdd">＋ Добавить правило</button>
+      <button class="gv-btn" id="gvIlSave">Сохранить запреты</button>
+      <span class="gv-meta">правил: ${rules.length} · блокируют сейчас: ${activeAll.filter((a) => a.mode !== "warn").length}</span>`;
+    host.appendChild(bar);
+    bar.querySelector("#gvIlAdd").onclick = () => {
+      rules.push({
+        id: "i" + Date.now().toString(36),
+        name: "Новое правило",
+        entity_id: "",
+        attribute: "",
+        op: "below",
+        value: 0,
+        actions: [],
+        mode: "block",
+        enabled: true,
+      });
+      this._settings = { ...(this._settings || {}), interlocks: rules };
+      this._renderTab();
+    };
+    bar.querySelector("#gvIlSave").onclick = () => this._save({ interlocks: rules });
+  }
+
+  _datalistHtml(id, items) {
+    return `<datalist id="${id}">` + items.map((i) => `<option value="${i.value}">${i.label}</option>`).join("") + `</datalist>`;
+  }
 
   _renderSchedules(host) {
     const list = (this._settings?.schedules || []).slice();
