@@ -24,9 +24,12 @@ from homeassistant.components.cover import (
 )
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
-from homeassistant.exceptions import HomeAssistantError
+from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.util import dt as dt_util
+
+from .const import DOMAIN
+from .interlocks import async_check, active_for_actions
 
 from .binary_sensor import GateVisionBase
 from .const import DOMAIN, STATE_CLOSED, STATE_OPEN, STATE_UNKNOWN
@@ -97,6 +100,14 @@ class GateCover(GateVisionBase, CoverEntity):
     def extra_state_attributes(self) -> dict[str, Any]:
         return {
             "last_direction": self._last_direction,
+            "blocked_by": [
+                item["text"]
+                for item in active_for_actions(
+                    self.hass,
+                    self.coordinator.settings.interlocks,
+                    ["open", "close", "stop"],
+                )
+            ],
             "control": {
                 k: v
                 for k, v in self.coordinator.settings.control.items()
@@ -116,12 +127,25 @@ class GateCover(GateVisionBase, CoverEntity):
 
     async def _command(self, action: str) -> None:
         if self._busy:
-            raise HomeAssistantError("gate_vision: предыдущая команда ещё выполняется")
+            raise ServiceValidationError("gate_vision: предыдущая команда ещё выполняется")
         state = self.data.get("state")
         if state == STATE_UNKNOWN:
-            raise HomeAssistantError(
+            raise ServiceValidationError(
                 "gate_vision: состояние ворот неизвестно — команда отменена"
             )
+        # Запреты по сенсорам (interlocks): проверяем ДО ранних выходов,
+        # чтобы запрещённая команда отклонялась явно.
+        blocking, warning = await async_check(
+            self.hass, self.coordinator.settings, action
+        )
+        for item in warning:
+            self._note_interlock("warn", action, item)
+        if blocking:
+            for item in blocking:
+                self._note_interlock("block", action, item)
+            text = "; ".join(item["text"] for item in blocking)
+            raise ServiceValidationError(f"gate_vision: запрещено правилом {text}")
+
         if action == "open" and state == STATE_OPEN:
             return
         if action == "close" and state == STATE_CLOSED:
@@ -130,7 +154,7 @@ class GateCover(GateVisionBase, CoverEntity):
             "check_clear_before_close"
         ):
             if not self.data.get("camera_ok"):
-                raise HomeAssistantError(
+                raise ServiceValidationError(
                     "gate_vision: камера недоступна — закрытие отменено"
                 )
 
@@ -143,6 +167,25 @@ class GateCover(GateVisionBase, CoverEntity):
             )
         finally:
             self._busy = False
+
+    def _note_interlock(self, mode: str, action: str, item: dict[str, Any]) -> None:
+        """Записать срабатывание запрета в журнал и на шину."""
+        entry = {
+            "ts": dt_util.utcnow().isoformat(),
+            "event": "interlock",
+            "mode": mode,
+            "action": action,
+            "rule": item.get("name"),
+            "reason": item.get("text"),
+            "state": self.data.get("state"),
+        }
+        self.coordinator.event_log.append(entry)
+        self.coordinator._last_event = entry  # noqa: SLF001
+        _LOGGER.warning("gate_vision: запрет (%s) — %s", mode, entry["reason"])
+        self.hass.bus.async_fire(
+            f"{DOMAIN}_interlock",
+            {"entry_id": self._entry.entry_id, **entry},
+        )
 
     async def _impulse(self) -> None:
         """Импульс на реле ворот (общая логика с расписаниями)."""
