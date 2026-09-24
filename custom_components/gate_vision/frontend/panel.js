@@ -129,14 +129,24 @@ class GateVisionPanel extends HTMLElement {
         .gv-tab { padding:7px 12px; border-radius:6px 6px 0 0; cursor:pointer; font-size:14px;
                   background: var(--secondary-background-color); border:1px solid var(--divider-color); border-bottom:none; }
         .gv-tab.active { background: var(--primary-color); color:#fff; border-color: var(--primary-color); }
-        .gv-row { display:flex; align-items:center; gap:10px; margin:7px 0; font-size:13px; }
+        .gv-row { display:flex; align-items:center; gap:10px; margin:7px 0; font-size:13px; flex-wrap:wrap; }
+        .gv-int-grid { display:grid; grid-template-columns:105px minmax(0,1fr); gap:6px 10px; align-items:center; }
+        .gv-int-grid > label { font-size:12px; opacity:.75; }
+        .gv-int-grid select, .gv-int-grid input:not([type=checkbox]) { width:100%; min-width:0; box-sizing:border-box; }
+        .gv-chk { display:inline-flex; align-items:center; gap:6px; white-space:nowrap; font-size:13px; }
+        .gv-chk input[type=checkbox] { width:auto; margin:0; }
+        .gv-int-grid .gv-row { margin:0; }
+        .gv-head-row { display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin:0 0 8px; }
+        .gv-ev { box-sizing:border-box; max-width:100%; overflow-wrap:anywhere; }
+        .gv-actions { display:flex; flex-wrap:wrap; gap:4px 12px; grid-column:1/-1; }
+        .gv-sub { grid-column:1/-1; font-size:12px; opacity:.75; margin-top:2px; }
         .gv-row label { flex:1 1 auto; }
         .gv-row input[type=range] { flex: 1 1 140px; }
         .gv-row input[type=text], .gv-row input[type=number] { flex:1 1 140px;
             background: var(--secondary-background-color); color: var(--primary-text-color);
             border:1px solid var(--divider-color); border-radius:6px; padding:5px 8px; }
         .gv-val { min-width:52px; text-align:right; opacity:.85; }
-        .gv-ev { border:1px solid var(--divider-color); border-radius:8px; padding:8px; margin:8px 0; }
+        .gv-ev { border:1px solid var(--divider-color); border-radius:8px; padding:8px; margin:8px 0; box-sizing:border-box; max-width:100%; }
         .gv-ev h4 { margin:0 0 6px; font-size:14px; }
         .gv-ch { display:flex; flex-wrap:wrap; gap:10px; margin:6px 0; font-size:13px; }
         .gv-ch label { display:flex; align-items:center; gap:4px; }
@@ -1010,6 +1020,36 @@ class GateVisionPanel extends HTMLElement {
 
 
   /* ------------------------------------------------------------------ запреты по сенсорам */
+  _sensorGroups() {
+    // Группы для выбора сенсора: сначала температура, потом прочие датчики, потом бинарные.
+    const states = (this._hass && this._hass.states) || {};
+    const temp = [], other = [], binary = [];
+    Object.keys(states).forEach((id) => {
+      const dom = id.split(".")[0];
+      const st = states[id];
+      const name = st.attributes?.friendly_name || id;
+      const dc = st.attributes?.device_class;
+      const unit = st.attributes?.unit_of_measurement || "";
+      const label = `${name}${unit ? " [" + unit + "]" : ""} — ${id}`;
+      if (dom === "sensor" && dc === "temperature") temp.push({ value: id, label });
+      else if (dom === "sensor" || dom === "number" || dom === "input_number") other.push({ value: id, label });
+      else if (dom === "binary_sensor" || dom === "input_boolean" || dom === "switch") binary.push({ value: id, label });
+    });
+    const srt = (a, b) => a.label.localeCompare(b.label, "ru");
+    return [
+      { title: "Датчики температуры", items: temp.sort(srt) },
+      { title: "Другие датчики и числа", items: other.sort(srt) },
+      { title: "Бинарные (включён/выключен)", items: binary.sort(srt) },
+    ];
+  }
+
+  _applyInterlocks(rules) {
+    // локальная правка: сохраняем в настройки в памяти и перерисовываем вкладку
+    this._settings = { ...(this._settings || {}), interlocks: rules };
+    this._dirty = true;
+    this._renderTab();
+  }
+
   _renderInterlocks(host) {
     const ops = [
       ["below", "меньше"], ["above", "больше"], ["equal", "равно"], ["not_equal", "не равно"],
@@ -1019,13 +1059,13 @@ class GateVisionPanel extends HTMLElement {
     const numeric = (op) => ["above", "below", "equal", "not_equal"].includes(op);
     const rules = JSON.parse(JSON.stringify(this._settings?.interlocks || []));
     const activeAll = (this._interlocks?.active || []);
-    const sensors = this._entities(["sensor", "binary_sensor", "input_number", "input_boolean", "number"]);
+    const groups = this._sensorGroups();
 
     const hint = document.createElement("div");
     hint.className = "gv-hint";
     hint.innerHTML = "<b>Запрет по сенсору:</b> пока условие на сенсоре выполнено, выбранные команды " +
       "не выполняются (<b>запрещать</b>) или выполняются с предупреждением в журнале (<b>только предупреждать</b>). " +
-      "Пример: «Уличная температура меньше −25 → запретить закрытие». Недоступный сенсор запретом не считается.";
+      "Недоступный сенсор запретом не считается.";
     host.appendChild(hint);
 
     const list = document.createElement("div");
@@ -1036,60 +1076,72 @@ class GateVisionPanel extends HTMLElement {
       rule.mode = rule.mode || "block";
       rule.actions = Array.isArray(rule.actions) ? rule.actions : [];
       rule.enabled = rule.enabled !== false;
+
+      const st = this._hass?.states?.[rule.entity_id];
+      const current = st ? `${st.state}${st.attributes?.unit_of_measurement ? " " + st.attributes.unit_of_measurement : ""}` : "—";
+      const isActive = activeAll.some((a) => a.id === rule.id);
+      const attrKeys = st ? Object.keys(st.attributes || {}).filter((k) => !["friendly_name", "device_class", "unit_of_measurement", "icon", "state_class", "supported_features"].includes(k)) : [];
+
       const card = document.createElement("div");
       card.className = "gv-ev";
       card.style.marginBottom = "10px";
-      const st = this._hass?.states?.[rule.entity_id];
-      const current = st ? st.state : "—";
-      const isActive = activeAll.some((a) => a.id === rule.id);
       card.innerHTML = `
-        <div class="gv-row" style="margin:0 0 6px">
-          <label style="min-width:auto">Правило ${i + 1}</label>
-          <input class="gv-inp gv-name" style="flex:1" value="${(rule.name || "").replace(/"/g, "&quot;")}" placeholder="название (например «Мороз: не закрывать»)">
+        <div class="gv-head-row">
+          <b style="font-size:13px;flex:1 1 80px">Правило ${i + 1}</b>
           ${rule.enabled ? "" : '<span class="gv-badge" style="background:#64748b;color:#fff">выключено</span>'}
           ${isActive ? `<span class="gv-badge" style="background:${rule.mode === "warn" ? "#d97706" : "#b91c1c"};color:#fff">сейчас ${rule.mode === "warn" ? "предупреждает" : "блокирует"}</span>` : ""}
-          <label class="gv-chk" title="правило включено"><input type="checkbox" class="gv-en" ${rule.enabled ? "checked" : ""}> вкл</label>
-          <button class="gv-btn secondary gv-del" title="удалить правило">✕</button>
+          <label class="gv-chk"><input type="checkbox" class="gv-en" ${rule.enabled ? "checked" : ""}> вкл</label>
+          <button class="gv-btn secondary gv-del" style="padding:4px 10px" title="удалить правило">✕</button>
         </div>
-        <div class="gv-row">
+        <div class="gv-int-grid">
+          <label>Название</label>
+          <input class="gv-name" value="${(rule.name || "").replace(/"/g, "&quot;")}" placeholder="например «Мороз: не открывать»">
           <label>Сенсор</label>
-          <input class="gv-inp gv-ent" style="flex:1" list="gvSensors" value="${rule.entity_id || ""}" placeholder="sensor.temperatura">
-          <span class="gv-meta">сейчас: <b>${current}</b></span>
-        </div>
-        <div class="gv-row">
+          <select class="gv-ent">
+            <option value="">— выберите сенсор —</option>
+            ${groups.map((g) => g.items.length ? `<optgroup label="${g.title}">${g.items.map((o) => `<option value="${o.value}" ${o.value === rule.entity_id ? "selected" : ""}>${o.label}</option>`).join("")}</optgroup>` : "").join("")}
+            ${rule.entity_id && !groups.some((g) => g.items.some((o) => o.value === rule.entity_id)) ? `<option value="${rule.entity_id}" selected>${rule.entity_id}</option>` : ""}
+          </select>
           <label>Атрибут</label>
-          <input class="gv-inp gv-attr" style="width:160px" value="${rule.attribute || ""}" placeholder="(пусто — состояние)">
+          <select class="gv-attr">
+            <option value="">(состояние сенсора)</option>
+            ${attrKeys.map((k) => `<option value="${k}" ${k === rule.attribute ? "selected" : ""}>${k}</option>`).join("")}
+          </select>
           <label>Условие</label>
-          <select class="gv-inp gv-op">${ops.map(([v, t]) => `<option value="${v}" ${v === rule.op ? "selected" : ""}>${t}</option>`).join("")}</select>
-          <input class="gv-inp gv-val" type="number" step="any" style="width:110px" value="${rule.value ?? 0}" ${numeric(rule.op) ? "" : "disabled"}>
+          <div class="gv-row" style="margin:0;gap:8px">
+            <select class="gv-op" style="flex:1 1 120px">${ops.map(([v, t]) => `<option value="${v}" ${v === rule.op ? "selected" : ""}>${t}</option>`).join("")}</select>
+            <input class="gv-val" type="number" step="any" style="flex:0 1 90px" value="${rule.value ?? 0}" ${numeric(rule.op) ? "" : "disabled"}>
+            <span class="gv-meta">сейчас: <b>${current}</b></span>
+          </div>
           <label>Режим</label>
-          <select class="gv-inp gv-mode">
-            <option value="block" ${rule.mode === "block" ? "selected" : ""}>запрещать</option>
+          <select class="gv-mode">
+            <option value="block" ${rule.mode === "block" ? "selected" : ""}>запрещать (команда не выполняется)</option>
             <option value="warn" ${rule.mode === "warn" ? "selected" : ""}>только предупреждать</option>
           </select>
-        </div>
-        <div class="gv-row">
-          <label>Запрещать команды</label>
-          ${acts.map(([v, t]) => `<label class="gv-chk"><input type="checkbox" class="gv-act" data-act="${v}" ${rule.actions.includes(v) ? "checked" : ""}> ${t}</label>`).join("")}
-          <span class="gv-meta">ничего не отмечено = все команды</span>
+          <span class="gv-sub">Запрещать команды (ничего не отмечено = все команды):</span>
+          <div class="gv-actions">
+            ${acts.map(([v, t]) => `<label class="gv-chk"><input type="checkbox" class="gv-act" data-act="${v}" ${rule.actions.includes(v) ? "checked" : ""}> ${t}</label>`).join("")}
+          </div>
         </div>`;
       list.appendChild(card);
 
-      const upd = () => { this._dirty = true; };
-      card.querySelector(".gv-name").oninput = (e) => { rule.name = e.target.value; upd(); };
-      card.querySelector(".gv-ent").onchange = (e) => { rule.entity_id = e.target.value.trim(); upd(); };
-      card.querySelector(".gv-attr").oninput = (e) => { rule.attribute = e.target.value.trim(); upd(); };
-      card.querySelector(".gv-op").onchange = (e) => {
-        rule.op = e.target.value; upd();
-        card.querySelector(".gv-val").disabled = !numeric(rule.op);
+      const paint = () => this._applyInterlocks(rules);
+      card.querySelector(".gv-name").onchange = (e) => { rule.name = e.target.value; this._dirty = true; };
+      card.querySelector(".gv-name").oninput = (e) => { rule.name = e.target.value; this._dirty = true; };
+      card.querySelector(".gv-ent").onchange = (e) => {
+        rule.entity_id = e.target.value;
+        rule.attribute = "";
+        paint();
       };
-      card.querySelector(".gv-val").oninput = (e) => { rule.value = parseFloat(e.target.value) || 0; upd(); };
-      card.querySelector(".gv-mode").onchange = (e) => { rule.mode = e.target.value; upd(); };
-      card.querySelector(".gv-en").onchange = (e) => { rule.enabled = e.target.checked; upd(); };
+      card.querySelector(".gv-attr").onchange = (e) => { rule.attribute = e.target.value; this._dirty = true; };
+      card.querySelector(".gv-op").onchange = (e) => { rule.op = e.target.value; paint(); };
+      card.querySelector(".gv-val").oninput = (e) => { rule.value = parseFloat(e.target.value) || 0; this._dirty = true; };
+      card.querySelector(".gv-mode").onchange = (e) => { rule.mode = e.target.value; paint(); };
+      card.querySelector(".gv-en").onchange = (e) => { rule.enabled = e.target.checked; paint(); };
       card.querySelectorAll(".gv-act").forEach((cb) => {
         cb.onchange = () => {
           rule.actions = Array.from(card.querySelectorAll(".gv-act")).filter((x) => x.checked).map((x) => x.dataset.act);
-          upd();
+          this._dirty = true;
         };
       });
       card.querySelector(".gv-del").onclick = () => {
@@ -1097,8 +1149,6 @@ class GateVisionPanel extends HTMLElement {
         this._save({ interlocks: rules });
       };
     });
-
-    host.appendChild(this._datalistHtml("gvSensors", sensors));
 
     if (!rules.length) {
       const empty = document.createElement("div");
@@ -1126,14 +1176,9 @@ class GateVisionPanel extends HTMLElement {
         mode: "block",
         enabled: true,
       });
-      this._settings = { ...(this._settings || {}), interlocks: rules };
-      this._renderTab();
+      this._applyInterlocks(rules);
     };
     bar.querySelector("#gvIlSave").onclick = () => this._save({ interlocks: rules });
-  }
-
-  _datalistHtml(id, items) {
-    return `<datalist id="${id}">` + items.map((i) => `<option value="${i.value}">${i.label}</option>`).join("") + `</datalist>`;
   }
 
   _renderSchedules(host) {
