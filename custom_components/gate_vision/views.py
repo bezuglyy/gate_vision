@@ -19,6 +19,8 @@ from .const import (
     CONF_LEARN_MODE,
     CONF_REACTIONS,
     CONF_SCHEDULES,
+    CONF_INTERLOCKS,
+    URL_INTERLOCKS,
     CONF_THRESHOLDS,
     CONF_ZONES,
     DOMAIN,
@@ -143,6 +145,7 @@ class GateStateView(HomeAssistantView):
             "settings": settings.as_dict() if settings else {},
             "event_log": list(coordinator.event_log)[-50:],
             "cover_entity": _cover_entity(hass, entry_id),
+            "interlocks": _interlocks_payload(hass, settings),
             "control_enabled": bool(
                 settings and settings.control.get("enabled")
             ),
@@ -182,6 +185,7 @@ class GateSettingsView(HomeAssistantView):
             CONF_REACTIONS,
             CONF_CONTROL,
             CONF_SCHEDULES,
+            CONF_INTERLOCKS,
             CONF_LEARN_MODE,
             "left_open_min",
             "scan_interval",
@@ -367,3 +371,48 @@ class GateCamerasView(HomeAssistantView):
             )
         items.sort(key=lambda i: i["title"])
         return web.json_response({"cameras": items, "count": len(items)})
+
+
+def _interlocks_payload(hass: HomeAssistant, settings: Any) -> dict[str, Any]:
+    """Правила запретов + какие срабатывают сейчас."""
+    if settings is None:
+        return {"rules": [], "active": []}
+    from .interlocks import active_for_actions
+
+    rules = list(getattr(settings, "interlocks", []) or [])
+    active = active_for_actions(hass, rules, ["open", "close", "stop", "impulse"])
+    return {
+        "rules": rules,
+        "active": active,
+        "active_text": [item["text"] for item in active],
+    }
+
+
+class GateInterlocksView(HomeAssistantView):
+    """Запреты по сенсорам: чтение и запись списка правил."""
+
+    url = URL_INTERLOCKS
+    name = f"{DOMAIN}:interlocks"
+    requires_auth = True
+
+    async def get(self, request: web.Request) -> web.Response:
+        hass: HomeAssistant = request.app["hass"]
+        settings = _settings(hass, _entry_id(request, hass))
+        if settings is None:
+            return web.json_response({"error": "не настроено"}, status=404)
+        return web.json_response(_interlocks_payload(hass, settings))
+
+    async def post(self, request: web.Request) -> web.Response:
+        hass: HomeAssistant = request.app["hass"]
+        settings = _settings(hass, _entry_id(request, hass))
+        if settings is None:
+            return web.json_response({"error": "не настроено"}, status=404)
+        try:
+            body: dict[str, Any] = await request.json()
+        except (json.JSONDecodeError, ValueError):
+            return web.json_response({"error": "некорректный JSON"}, status=400)
+        rules = body.get(CONF_INTERLOCKS)
+        if not isinstance(rules, list):
+            return web.json_response({"error": "нужен список interlocks"}, status=400)
+        await settings.async_save({CONF_INTERLOCKS: rules})
+        return web.json_response({"ok": True, **_interlocks_payload(hass, settings)})
