@@ -89,6 +89,9 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Выгрузить интеграцию."""
     unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
     if unload_ok:
+        runner = hass.data[DOMAIN].pop(f"runner:{entry.entry_id}", None)
+        if runner is not None:
+            runner.stop()
         coordinator: GateVisionCoordinator | None = hass.data[DOMAIN].pop(
             entry.entry_id, None
         )

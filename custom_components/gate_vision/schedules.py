@@ -137,6 +137,12 @@ class ScheduleRunner:
         moving = bool(data.get("moving"))
         name = item.get("name") or item.get("id")
 
+        # «Управление воротами» (control.enabled) выключено — расписания не исполняем
+        if not self.coordinator.settings.control.get("enabled"):
+            _LOGGER.info("gate_vision: управление выключено — расписание «%s» пропущено", name)
+            await self._log_skip(item, "управление выключено")
+            return
+
         # --- проверка состояния ПЕРЕД выполнением ---
         require = item.get("require_state", "any")
         if require != "any":
