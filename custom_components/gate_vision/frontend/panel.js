@@ -887,13 +887,13 @@ class GateVisionPanel extends HTMLElement {
       <div class="gv-hint">Пока управление выключено, сущность cover не создаётся — интеграция только читает состояние.
       У <b>импульсного</b> реле длительность задаётся в самом реле, поэтому время нажатия не спрашивается.
       У <b>постоянного</b> реле ворот держим его заданное время и отпускаем.</div>
-      <button class="gv-btn">Сохранить</button>`;
+      <button class="gv-btn" id="gvCtrlSave">Сохранить</button>`;
     const typeSel = wrap.querySelector("#gvRelayType");
     const holdRow = wrap.querySelector("#gvHoldRow");
     if (typeSel && holdRow) {
       typeSel.onchange = () => { holdRow.style.display = typeSel.value === "constant" ? "" : "none"; };
     }
-    wrap.querySelector("button").onclick = () => {
+    wrap.querySelector("#gvCtrlSave").onclick = () => {
       const patch = {};
       wrap.querySelectorAll("[data-f]").forEach((el) => {
         patch[el.dataset.f] = el.type === "checkbox" ? el.checked

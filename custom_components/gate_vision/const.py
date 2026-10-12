@@ -5,7 +5,7 @@ from __future__ import annotations
 DOMAIN = "gate_vision"
 NAME = "Обнаружение"
 MANUFACTURER = "techlan.su"
-VERSION = "1.7.3"
+VERSION = "1.7.5"
 
 # --- ключи настроек (config entry data/options) ---
 CONF_CAMERA_ENTITY = "camera_entity"
@@ -197,8 +197,27 @@ INTERLOCK_MODES: dict[str, str] = {
 }
 DEFAULT_INTERLOCKS: list[dict] = []
 # Состояния, которые считаем «включено»/«выключено» для is_on/is_off.
-ISH_ON_STATES = {"on", "true", "1", "yes", "home", "open", "opened", "открыто", "включено"}
-IS_OFF_STATES = {"off", "false", "0", "no", "not_home", "closed", "закрыто", "выключено"}
+ISH_ON_STATES = {
+    "on",
+    "true",
+    "1",
+    "yes",
+    "home",
+    "open",
+    "opened",
+    "открыто",
+    "включено",
+}
+IS_OFF_STATES = {
+    "off",
+    "false",
+    "0",
+    "no",
+    "not_home",
+    "closed",
+    "закрыто",
+    "выключено",
+}
 
 # --- HTTP/панель ---
 URL_STATIC = f"/{DOMAIN}_static"
